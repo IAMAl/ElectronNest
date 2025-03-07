@@ -51,7 +51,7 @@ module TokenUnit
 
 	logic						Recover;
 
-	logic	[2:0]				Num;
+	logic	[1:0]				Num;
 
 	fsm_token					R_FSM;
 	logic						R_Valid [1:0];
@@ -72,19 +72,6 @@ module TokenUnit
 	assign is_wAIT			= ( R_FSM == wAIT );
 	assign is_rEVERT		= ( R_FSM == rEVERT );
 	assign Pulse_Nack		= ~I_Nack & & R_NackD1 & ~R_NackD2;
-
-	always_ff @( posedge clock ) begin
-		if ( reset ) begin
-			Pulse_Nack_Bar	<= 1'b0;
-		end
-		else if ( ~I_Nack ) begin
-			Pulse_Nack_Bar	<= 1'b0;
-		end
-		else if ( Stall & ~R_NackD1 & R_NackD2 ) begin
-			Pulse_Nack_Bar	<= 1'b1;
-		end
-	end
-
 
 	//// Combination Table
 	//	I_Valid	I_Nack NoNack	Valid_Run	Stall
@@ -139,15 +126,28 @@ module TokenUnit
 	assign O_RNo			= R_RNo;
 
 
+	//// Pulse Nack-Bar Detection
+	always_ff @( posedge clock ) begin
+		if ( reset ) begin
+			Pulse_Nack_Bar	<= 1'b0;
+		end
+		else if ( ~I_Nack ) begin
+			Pulse_Nack_Bar	<= 1'b0;
+		end
+		else if ( Stall & ~R_NackD1 & R_NackD2 ) begin
+			Pulse_Nack_Bar	<= 1'b1;
+		end
+	end
+
 	//// Store Valid Token											////
 	//	 Capture dropped Valid Token
-	assign Recover			= Num[1] | ( ( Num == 3'h0 ) & R_NackD2 & ~I_Valid & R_Valid[ R_WNo ] );
+	assign Recover			= Num[1] | ( ( Num == 2'h0 ) & R_NackD2 & ~I_Valid & R_Valid[ R_WNo ] );
 	always_ff @( posedge clock ) begin: ff_valid_tokenunit
 		if ( reset ) begin
 			R_Valid[0]			<= 1'b0;
 			R_Valid[1]			<= 1'b0;
 		end
-		else if ( We | FlipR | is_rEVERT | Pulse_Nack ) begin
+		else if ( We | is_rEVERT | Pulse_Nack | FlipR ) begin
 			if ( We | is_rEVERT | Pulse_Nack ) begin
 				R_Valid[ R_WNo ]	<= I_Valid | Recover;
 			end
@@ -276,20 +276,17 @@ module TokenUnit
 		endcase
 	end
 
-
-	RingBuffCTRL #(
-		.NUM_ENTRY( 		4							)
-	) CntValid
-	(
-		.clock(				clock						),
-		.reset(				reset						),
-		.I_We(				We							),
-		.I_Re(				Re							),
-		.O_WAddr(										),
-		.O_RAddr(										),
-		.O_Full(										),
-		.O_Empty(										),
-		.O_Num(				Num							)
-	);
+	//// Count Stores
+	always_ff @( posedge clock ) begin: ff_count_tokenunit
+		if ( reset ) begin
+			Num		<= 2'h0;
+		end
+		else if ( We & ~Re ) begin
+			Num		<= Num + 1'b1;
+		end
+		else if ( ~We & Re ) begin
+			Num		<= Num - 1'b1;
+		end
+	end
 
 endmodule
