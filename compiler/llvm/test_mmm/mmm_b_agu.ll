@@ -1,48 +1,63 @@
-; AGU for array b
+; ModuleID = 'agu_code'
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu"
+@b = external global [32 x [32 x i32]], align 16
 
-define dso_local void @agu_b() #0 {
-; Loop level 1
-%i1 = alloca i32, align 4
-store i32 0, i32* %i1, align 4
-br label %loop.header.1
+define void @b_agu() #0 {
+entry:
+  %i1_ptr = alloca i32, align 4
+  %i2_ptr = alloca i32, align 4
+  %i3_ptr = alloca i32, align 4
+  store i32 0, i32* %i1_ptr, align 4
+  br label %5
 
-loop.header.1:
-%i1.load = load i32, i32* %i1, align 4
-%i1.cmp = icmp slt i32 %i1.load, 32
-br i1 %i1.cmp, label %loop.body.1, label %loop.exit.1
+5:
+  store i32 0, i32* %i2_ptr, align 4
+  %i1 = load i32, i32* %i1_ptr, align 4
+  %cond_i1 = icmp slt i32 %i1, 32
+  br i1 %cond_i1, label %8, label %ret
 
-loop.body.1:
-; Loop level 2
-%i2 = alloca i32, align 4
-store i32 0, i32* %i2, align 4
-br label %loop.header.2
+8:
+  br label %9
 
-loop.header.2:
-%i2.load = load i32, i32* %i2, align 4
-%i2.cmp = icmp slt i32 %i2.load, 32
-br i1 %i2.cmp, label %loop.body.2, label %loop.exit.2
+54:
+  %i1_next = add i32 %i1, 1
+  store i32 %i1_next, i32* %i1_ptr, align 4
+  br label %ret
 
-loop.body.2:
-; Access using %3
-%3.val = load i32, i32* %3, align 4
-; Access using %4
-%4.val = load i32, i32* %4, align 4
-%ptr_0 = getelementptr inbounds [32 x [32 x i32]], [32 x [32 x i32]]* @b, i32 0, i32 %3.val
-%ptr_1 = getelementptr inbounds [32 x i32], [32 x i32]* %ptr_0, i32 0, i32 %4.val
-%loaded.val = load i32, i32* %ptr_1, align 4
+9:
+  store i32 0, i32* %i3_ptr, align 4
+  %i2 = load i32, i32* %i2_ptr, align 4
+  %cond_i2 = icmp slt i32 %i2, 32
+  br i1 %cond_i2, label %12, label %50
 
-loop.exit.1:
-%i1.next = add i32 %i1.load, 1
-store i32 %i1.next, i32* %i1, align 4
-br label %loop.header.1
+12:
+  br label %19
 
-loop.exit.2:
-%i2.next = add i32 %i2.load, 1
-store i32 %i2.next, i32* %i2, align 4
-br label %loop.header.2
-ret void
+50:
+  %i2_next = add i32 %i2, 1
+  store i32 %i2_next, i32* %i2_ptr, align 4
+  br label %54
+
+19:
+  %i3 = load i32, i32* %i3_ptr, align 4
+  %cond_i3 = icmp slt i32 %i3, 32
+  br i1 %cond_i3, label %22, label %46
+
+22:
+  %sext_0_b_22 = sext i32 %i2 to i64
+  %sext_1_b_22 = sext i32 %i3 to i64
+  %gep_b_22 = getelementptr inbounds [32 x [32 x i32]], [32 x [32 x i32]]* @b, i64 0, i64 %sext_0_b_22, i64 %sext_1_b_22
+  %load_b_22 = load i32, i32* %gep_b_22, align 4
+  br label %46
+
+46:
+  %i3_next = add i32 %i3, 1
+  store i32 %i3_next, i32* %i3_ptr, align 4
+  br label %50
+
+ret:
+  ret void
 }
 
 attributes #0 = { nounwind }

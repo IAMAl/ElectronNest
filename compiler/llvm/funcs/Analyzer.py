@@ -8,7 +8,7 @@
 ##
 ##################################################################
 from typing import TypedDict, List, Dict, Tuple, Optional, Set, Union, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import utils.AMUtils as AMUtils
 import re
@@ -44,9 +44,14 @@ class LoopInfo:
 
 @dataclass
 class DimensionAccess:
-	dimension: int			# Access Dim
-	loop_level: str			# Loop Level
-	array_size: int			# Dim Size
+	dimension: int          # Access Dim
+	loop_level: str         # Loop Level
+	array_size: int         # Dim Size
+	path_info: Dict[str, Any] = field(default_factory=dict)	# store-to-leafパス情報
+															# {
+															#   'path_nodes': List[str],	# パス上のノードID
+															#   'instructions': List[Dict]	# 各ノードの命令情報
+															# }
 
 @dataclass
 class ArrayDimInfo:
@@ -58,6 +63,22 @@ class IndexExpression:
 	path: List[int]				# List of *node IDs* that compute the index
 	source_variables: List[str]	# Source variable for this index expression.
 
+@dataclass
+class RegisterFlow:
+	reg: str
+	opcode: str
+	operands: List[str]
+	output: str
+	extra_info: Dict = field(default_factory=dict)
+
+@dataclass
+class CompFlowInfo:
+	reg_flows: List[RegisterFlow]
+	loop_level: Optional[int] = None
+	block_id: Optional[str] = None
+
+	def add_flow(self, reg_flow: RegisterFlow):
+		self.reg_flows.append(reg_flow)
 
 class ComputeDataPath:
 	def __init__(self, analyzer):
@@ -65,6 +86,8 @@ class ComputeDataPath:
 		self.compute_paths = []
 		self.store_load_deps = analyzer.store_load_deps
 		self.loop_info = analyzer.loop_levels
+		self.all_nodes = analyzer.all_nodes
+		self.RegisterFlow = RegisterFlow
 
 	def analyze_compute_paths(self) -> Dict:
 		"""計算パスの分析（汎用）"""
@@ -85,10 +108,10 @@ class ComputeDataPath:
 				#print(f"Debug: Found {len(paths)} paths in block {block_id}")
 				if paths:
 					#print(f"Debug: Paths from block {block_id}:")
-					for path in paths:
-						#print(f"Debug: - Path ID: {path.get('path_id')}")
-						#print(f"Debug:   Type: {path.get('type')}")
-						#print(f"Debug:   Computation sequence: {path.get('computation', {}).get('sequence', [])}")
+					#for path in paths:
+					#	#print(f"Debug: - Path ID: {path.get('path_id')}")
+					#	#print(f"Debug:   Type: {path.get('type')}")
+					#	#print(f"Debug:   Computation sequence: {path.get('computation', {}).get('sequence', [])}")
 					result['compute_paths'].extend(paths)
 
 			#print(f"\nDebug: Total paths collected: {len(result['compute_paths'])}")
@@ -106,444 +129,356 @@ class ComputeDataPath:
 
 		except Exception as e:
 			print(f"Error in analyze_compute_paths: {e}")
-			print(f"Debug: Exception traceback:", e.__traceback__)
+			#print(f"Debug: Exception traceback:", e.__traceback__)
 			return result
 
-	def _is_path_end(self, node_info: List[str]) -> bool:
-		"""
-		計算パスの終端ノードかを判定
-		Args:
-			node_info: ノード情報
-		Returns:
-			bool: 終端ノードの場合True
-		"""
-		try:
-			if len(node_info) < 2:
-				return False
-
-			# store命令による終端
-			if 'store' in node_info[1]:
-				return True
-
-			# LEAFノードによる終端
-			if 'LEAF' in node_info:
-				return True
-
-			return False
-
-		except Exception as e:
-			print(f"Error checking path end: {e}")
-			return False
-
-	def _is_valid_path_start(self, operation: str, node_info: List[str]) -> bool:
-		"""
-		有効な計算パスの開始点かを判定
-		Args:
-			operation: 命令の種類
-			node_info: ノード情報
-		Returns:
-			bool: 有効な開始点の場合True
-		"""
-		try:
-			# 命令タイプによる判定
-			if operation in {'add', 'mul', 'sub'}:
-				# 計算命令には入力と出力のレジスタが必要
-				return (len(node_info) >= 4 and
-					node_info[2].startswith('%') and  # 出力レジスタ
-					any(op.startswith('%') for op in node_info[3:]))  # 少なくとも1つの入力レジスタ
-
-			elif operation == 'icmp':
-				# 比較命令の場合
-				return (len(node_info) >= 4 and
-					node_info[2].startswith('%'))  # 結果レジスタ
-
-			elif operation == 'load':
-				# load命令の場合
-				return (len(node_info) >= 3 and
-					node_info[2].startswith('%'))  # ロード先レジスタ
-
-			return False
-
-		except Exception as e:
-			print(f"Error checking valid path start: {e}")
-			return False
-
-	def _should_merge_with_path(self, node_info: List[str], existing_path: Dict) -> bool:
-		"""既存のパスと結合すべきかを判定"""
-		try:
-			# 1. レジスタの依存関係をチェック
-			if 'computation' in existing_path:
-				last_comp = existing_path['computation']['sequence'][-1]
-				output_reg = last_comp['output_reg']
-				# 現在のノードが前の計算の結果を使用している場合
-				if any(reg == output_reg for reg in node_info[3:]):
-					return True
-
-			# 2. 同じloop_contextに属しているかチェック
-			if 'loop_context' in existing_path:
-				return existing_path['loop_context']['level'] == self._get_loop_level(node_info)
-
-			return False
-
-		except Exception as e:
-			print(f"Error checking path merge: {e}")
-			return False
-
-	def _merge_related_paths(self, paths: List[Dict]) -> List[Dict]:
-		"""関連するパスを結合"""
-		try:
-			merged = []
-			used_paths = set()
-
-			for i, path1 in enumerate(paths):
-				if i in used_paths:
-					continue
-
-				current_merge = path1
-				for j, path2 in enumerate(paths[i+1:], i+1):
-					if j in used_paths:
-						continue
-
-					if self._can_merge_paths(current_merge, path2):
-						current_merge = self._merge_two_paths(current_merge, path2)
-						used_paths.add(j)
-
-				merged.append(current_merge)
-				used_paths.add(i)
-
-			return merged
-
-		except Exception as e:
-			print(f"Error merging paths: {e}")
-			return paths
-
-	def _can_merge_paths(self, path1: Dict, path2: Dict) -> bool:
-		"""2つのパスが結合可能か判定"""
-		try:
-			# 1. 同じループレベルに属しているか
-			if path1['loop_context']['level'] != path2['loop_context']['level']:
-				return False
-
-			# 2. レジスタの依存関係があるか
-			path1_outputs = {comp['output_reg'] for comp in path1['computation']['sequence']}
-			path2_inputs = set()
-			for comp in path2['computation']['sequence']:
-				path2_inputs.update(comp['input_regs'])
-
-			return bool(path1_outputs & path2_inputs)
-
-		except Exception as e:
-			print(f"Error checking path merge possibility: {e}")
-			return False
-
 	def _identify_block_compute_paths(self, block_id: str) -> List[Dict]:
-		"""ブロック内の計算パスを特定"""
-		paths = []
+		"""
+		基本ブロック内の計算パスを特定する
 
+		Args:
+			block_id: 基本ブロックID
+		Returns:
+			List[Dict]: 特定された計算パスのリスト
+		"""
+		paths = []
 		try:
-			#print(f"Debug: _identify_block_compute_paths for block {block_id}")
-			nodes = self.analyzer._read_node_list(block_id)
+			nodes = self._read_node_list(block_id)
 			if not nodes:
-				#print(f"Debug: No nodes found in block {block_id}")
 				return paths
 
-			#print(f"Debug: Found {len(nodes)} nodes in block {block_id}")
+			# 配列アクセス情報を追跡
+			array_access_info = {}
+			load_info = {}  # レジスタ → ロード情報のマッピング
+			store_info = {}  # レジスタ → ストア情報のマッピング
+			register_to_array = {}  # レジスタ → 配列名のマッピング
 
-			current_path = None
-			for node_id, node in enumerate(nodes):
+			# ステップ1: すべてのGEP、load、store命令を収集する
+			for node_idx, node in enumerate(nodes):
 				node_info = node[0].split()
-				#print(f"Debug: Processing node {node_id}: {node_info}")
-
 				if len(node_info) < 2:
 					continue
 
-				# パス開始の判定
-				if current_path is None:
-					operation = node_info[1].split('_')[0]
-					#print(f"Debug: Checking operation: {operation}")
-					if operation in {'add', 'mul', 'sub', 'icmp', 'load'}:
-						#print(f"Debug: Starting new path with operation {operation}")
-						current_path = self._init_compute_path(block_id, node_id, node_info)
-						if operation != 'load':
-							self._add_computation_node(current_path, node_id, node_info)
-						#print(f"Debug: New path initialized: {current_path}")
-						continue
+				# GEP命令の処理 (配列アクセス)
+				if 'getelementptr' in node_info[1]:
+					dest_reg = node_info[2] if len(node_info) > 2 else None
+					array_name = self._get_array_from_reg(node_info[1])
+					if array_name and dest_reg:
+						array_access_info[dest_reg] = {
+							'array': array_name,
+							'type': 'gep',
+							'reg': dest_reg
+						}
+						register_to_array[dest_reg] = array_name
 
-				# 既存パスへのノード追加
-				if current_path:
-					operation = node_info[1].split('_')[0]
-					if operation in {'add', 'mul', 'sub', 'icmp'}:
-						#print(f"Debug: Adding computation node {operation}")
-						self._add_computation_node(current_path, node_id, node_info)
-					elif operation == 'store':
-						#print(f"Debug: Finalizing path with store operation")
-						finalized_path = self._finalize_compute_path(current_path, node_id, node_info)
-						if finalized_path:
-							#print(f"Debug: Adding finalized path to results")
-							paths.append(finalized_path)
-						current_path = None
+				# Load命令の処理
+				elif 'load' in node_info[1]:
+					if len(node_info) >= 4:
+						result_reg = node_info[2]  # ロード結果
+						addr_reg = node_info[3]    # アドレス
 
-			# 最後のパスの処理
-			if current_path:
-				#print(f"Debug: Finalizing last path in block")
-				finalized_path = self._finalize_compute_path(current_path, len(nodes)-1, nodes[-1][0].split())
-				if finalized_path:
-					#print(f"Debug: Adding last finalized path to results")
-					paths.append(finalized_path)
+						# アドレスが配列アクセスから来ている場合
+						if addr_reg in array_access_info:
+							array_info = array_access_info[addr_reg]
+							array_name = array_info.get('array')
+							load_info[result_reg] = {
+								'array': array_name,
+								'reg': result_reg,
+								'source_reg': addr_reg
+							}
+							# 結果レジスタも配列値としてマーク
+							array_access_info[result_reg] = {
+								'array': array_name,
+								'type': 'load',
+								'reg': result_reg
+							}
+							register_to_array[result_reg] = array_name
 
-			#print(f"Debug: Returning {len(paths)} paths from block {block_id}")
+				# Store命令の処理
+				elif 'store' in node_info[1]:
+					if len(node_info) >= 4:
+						value_reg = node_info[2]  # 格納する値
+						addr_reg = node_info[3]   # 格納先アドレス
+
+						# アドレスが配列アクセスから来ている場合
+						if addr_reg in array_access_info:
+							array_info = array_access_info[addr_reg]
+							array_name = array_info.get('array')
+							store_info[addr_reg] = {
+								'array': array_name,
+								'value_reg': value_reg,
+								'target_reg': addr_reg
+							}
+
+			# ステップ2: 計算パスを構築する
+			# 各命令タイプ（load/store/計算）ごとに別々のパスを作成
+			# 後で関連付けを行う
+
+			# Load命令の処理
+			for node_idx, node in enumerate(nodes):
+				node_info = node[0].split()
+				if len(node_info) < 2:
+					continue
+
+				if 'load' in node_info[1]:
+					result_reg = node_info[2]  # ロード結果
+					addr_reg = node_info[3]    # アドレス
+
+					# 配列アクセスの場合のみパスを生成
+					if addr_reg in array_access_info:
+						array_name = array_access_info[addr_reg].get('array')
+
+						load_path = {
+							'path_id': f"path_{block_id}_load_{node_idx}",
+							'type': 'load',
+							'inputs': {
+								'loads': [{
+									'array': array_name,
+									'reg': result_reg,
+									'source_reg': addr_reg
+								}],
+								'leafs': []
+							},
+							'computation': {
+								'sequence': [],
+								'flow_info': CompFlowInfo(
+									reg_flows=[],
+									block_id=block_id
+								)
+							},
+							'output': {
+								'type': 'register',
+								'value_reg': result_reg
+							},
+							'loop_context': {
+								'level': None,
+								'is_reduction': False,
+								'is_loop_carried': False
+							}
+						}
+
+						# ループレベルの設定
+						for level, info in self.analyzer.loop_levels.items():
+							if block_id in info.nodes:
+								load_path['loop_context']['level'] = level
+								load_path['computation']['flow_info'].loop_level = int(level)
+								break
+
+						paths.append(load_path)
+
+			# Store命令の処理
+			for node_idx, node in enumerate(nodes):
+				node_info = node[0].split()
+				if len(node_info) < 2:
+					continue
+
+				if 'store' in node_info[1]:
+					value_reg = node_info[2]  # 格納する値
+					addr_reg = node_info[3]   # 格納先アドレス
+
+					# 配列アクセスの場合のみパスを生成
+					if addr_reg in array_access_info:
+						array_name = array_access_info[addr_reg].get('array')
+
+						store_path = {
+							'path_id': f"path_{block_id}_store_{node_idx}",
+							'type': 'store',
+							'inputs': {
+								'loads': [],
+								'leafs': []
+							},
+							'computation': {
+								'sequence': [],
+								'flow_info': CompFlowInfo(
+									reg_flows=[],
+									block_id=block_id
+								)
+							},
+							'output': {
+								'type': 'memory',
+								'target_reg': addr_reg,
+								'value_reg': value_reg,
+								'array': array_name
+							},
+							'loop_context': {
+								'level': None,
+								'is_reduction': False,
+								'is_loop_carried': False
+							}
+						}
+
+						# ループレベルの設定
+						for level, info in self.analyzer.loop_levels.items():
+							if block_id in info.nodes:
+								store_path['loop_context']['level'] = level
+								store_path['computation']['flow_info'].loop_level = int(level)
+								break
+
+						paths.append(store_path)
+
+			# 計算命令の処理
+			current_path = None
+
+			for node_idx, node in enumerate(nodes):
+				node_info = node[0].split()
+				if len(node_info) < 2:
+					continue
+
+				operation = node_info[1].split('_')[0]
+
+				# 計算命令（add/mul/sub/icmp）の場合
+				if operation in {'add', 'mul', 'sub', 'icmp'}:
+					# 新しい計算パスの開始またはリセット
+					if current_path is None or operation != current_path['type']:
+						# 前のパスが完成していれば追加
+						if current_path is not None:
+							paths.append(current_path)
+
+						# 新しいパスを初期化
+						current_path = {
+							'path_id': f"path_{block_id}_{operation}_{node_idx}",
+							'type': 'unknown',
+							'inputs': {
+								'loads': [],
+								'leafs': []
+							},
+							'computation': {
+								'sequence': [],
+								'flow_info': CompFlowInfo(
+									reg_flows=[],
+									block_id=block_id
+								)
+							},
+							'output': {'type': 'register'},
+							'loop_context': {
+								'level': None,
+								'is_reduction': False,
+								'is_loop_carried': False
+							}
+						}
+
+						# ループレベルの設定
+						for level, info in self.analyzer.loop_levels.items():
+							if block_id in info.nodes:
+								current_path['loop_context']['level'] = level
+								current_path['computation']['flow_info'].loop_level = int(level)
+								break
+
+					# 計算ノードを追加
+					self._add_computation_node(current_path, node_idx, node_info, array_access_info)
+
+					# 入力レジスタに関連するロード情報を追加
+					for input_reg in node_info[3:]:
+						if input_reg.startswith('%') and input_reg in load_info:
+							load_data = load_info[input_reg]
+							if not any(ld.get('reg') == load_data['reg'] for ld in current_path['inputs']['loads']):
+								current_path['inputs']['loads'].append(load_data)
+
+					# パスのタイプを更新
+					current_path['type'] = self._update_path_type(current_path['type'], operation)
+
+					# 出力情報を更新
+					output_reg = node_info[2]
+					current_path['output']['value_reg'] = output_reg
+
+					# 出力レジスタが後でストアされる場合、出力タイプをメモリに変更
+					if output_reg in store_info:
+						store_data = store_info[output_reg]
+						current_path['output'] = {
+							'type': 'memory',
+							'target_reg': store_data['target_reg'],
+							'value_reg': output_reg,
+							'array': store_data['array']
+						}
+
+					# 出力レジスタが配列アクセスに使用される場合、その情報を追加
+					if output_reg in register_to_array:
+						current_path['output']['array'] = register_to_array[output_reg]
+
+				# 他の命令の場合は現在のパスを無視
+				elif operation not in {'load', 'store', 'getelementptr'} and current_path is not None:
+					# 計算パスが途切れたとみなし、パスを追加して新しい計算パスを開始
+					paths.append(current_path)
+					current_path = None
+
+			# 最後のパスも追加
+			if current_path is not None:
+				paths.append(current_path)
+
+			# ステップ3: 計算パス間の関連付け
+			# 例: 乗算結果が加算の入力として使用される場合
+			reg_to_path = {}  # レジスタ → パスのマッピング
+
+			# まず各パスの出力レジスタを記録
+			for i, path in enumerate(paths):
+				if 'value_reg' in path['output']:
+					reg = path['output']['value_reg']
+					if reg:
+						reg_to_path[reg] = i
+
+			# 次に各パスの入力が他のパスの出力から来ている場合、その情報を追加
+			for path in paths:
+				for load in path['inputs'].get('loads', []):
+					reg = load.get('reg')
+					if reg in reg_to_path:
+						src_path_idx = reg_to_path[reg]
+						src_path = paths[src_path_idx]
+						if 'dependencies' not in path:
+							path['dependencies'] = []
+						path['dependencies'].append({
+							'source_path': src_path['path_id'],
+							'type': 'register',
+							'through': reg
+						})
+
 			return paths
 
 		except Exception as e:
-			print(f"Error in _identify_block_compute_paths: {e}")
+			print(f"Error in _identify_block_compute_paths for block {block_id}: {e}")
+			import traceback
+			traceback.print_exc()
 			return paths
-
-	def _merge_two_paths(self, path1: Dict, path2: Dict) -> Dict:
-		"""
-		2つのパスを結合
-		Args:
-			path1: 基準となるパス
-			path2: 結合するパス
-		Returns:
-			結合されたパス
-		"""
-		try:
-			merged = {
-				'path_id': f"{path1['path_id']}_{path2['path_id']}",
-				'type': self._determine_merged_type(path1['type'], path2['type']),
-				'inputs': {
-					'loads': [],
-					'leafs': []
-				},
-				'computation': {'sequence': []},
-				'output': None,
-				'loop_context': path1['loop_context']  # ループコンテキストは一致していることが前提
-			}
-
-			# 入力の結合（重複を排除）
-			seen_loads = set()
-			for path in [path1, path2]:
-				for load in path['inputs']['loads']:
-					load_key = (load['array'], tuple(load['index_regs']))
-					if load_key not in seen_loads:
-						merged['inputs']['loads'].append(load)
-						seen_loads.add(load_key)
-
-			# leafsの結合（重複を排除）
-			seen_leafs = set()
-			for path in [path1, path2]:
-				for leaf in path['inputs']['leafs']:
-					leaf_key = (leaf['reg'], leaf['node_id'])
-					if leaf_key not in seen_leafs:
-						merged['inputs']['leafs'].append(leaf)
-						seen_leafs.add(leaf_key)
-
-			# 計算シーケンスの結合と順序付け
-			ordered_sequence = self._order_computation_sequence(
-				path1['computation']['sequence'] + path2['computation']['sequence']
-			)
-			merged['computation']['sequence'] = ordered_sequence
-
-			# 出力の設定（最後の計算の出力を使用）
-			if ordered_sequence:
-				merged['output'] = {
-					'type': 'register',
-					'target_reg': ordered_sequence[-1]['output_reg']
-				}
-
-			return merged
-
-		except Exception as e:
-			print(f"Error merging paths: {e}")
-			return path1
-
-	def _determine_merged_type(self, type1: str, type2: str) -> str:
-		"""結合後のパスタイプを決定"""
-		try:
-			type_priorities = {
-				'multiply_add': 3,
-				'multiply': 2,
-				'add_chain': 1,
-				'misc': 0,
-				'unknown': -1
-			}
-
-			# multiply_addの特殊ケース
-			if ('multiply' in (type1, type2) and
-				'add_chain' in (type1, type2)):
-				return 'multiply_add'
-
-			# それ以外は優先度の高い方を採用
-			return max(type1, type2, key=lambda t: type_priorities.get(t, -1))
-
-		except Exception as e:
-			print(f"Error determining merged type: {e}")
-			return 'unknown'
-
-	def _order_computation_sequence(self, sequence: List[Dict]) -> List[Dict]:
-		"""
-		計算シーケンスを依存関係に基づいて順序付け
-		"""
-		try:
-			# 依存関係グラフの構築
-			graph = {}
-			in_degree = {}
-			reg_to_node = {}  # レジスタから生成ノードへのマッピング
-
-			# ノードの初期化
-			for node in sequence:
-				node_id = node['node_id']
-				graph[node_id] = set()
-				in_degree[node_id] = 0
-				reg_to_node[node['output_reg']] = node_id
-
-			# 依存関係の追加
-			for node in sequence:
-				node_id = node['node_id']
-				for input_reg in node['input_regs']:
-					if input_reg in reg_to_node:
-						src_id = reg_to_node[input_reg]
-						if src_id != node_id:  # 自己依存を除外
-							graph[src_id].add(node_id)
-							in_degree[node_id] += 1
-
-			# トポロジカルソート
-			ordered_nodes = []
-			queue = [node_id for node_id in graph if in_degree[node_id] == 0]
-
-			while queue:
-				current = queue.pop(0)
-				ordered_nodes.append(current)
-
-				for neighbor in graph[current]:
-					in_degree[neighbor] -= 1
-					if in_degree[neighbor] == 0:
-						queue.append(neighbor)
-
-			# シーケンスの再構築
-			node_dict = {node['node_id']: node for node in sequence}
-			ordered_sequence = [node_dict[node_id] for node_id in ordered_nodes]
-
-			return ordered_sequence
-
-		except Exception as e:
-			print(f"Error ordering computation sequence: {e}")
-			return sequence
-
-	def _check_loop_carried_use(self, node_info: List[str], block_id: str) -> bool:
-		"""
-		ノードがループ伝搬依存を持つか確認
-		Args:
-			node_info: ノード情報
-			block_id: 基本ブロックID
-		Returns:
-			bool: ループ伝搬依存がある場合True
-		"""
-		try:
-			# phi命令の場合
-			if 'phi' in node_info[1]:
-				return True
-
-			# レジスタの定義元を探索
-			reg = node_info[1] if len(node_info) > 1 else None
-			if not reg or not reg.startswith('%'):
-				return False
-
-			# ループ情報の取得
-			loop_info = self.analyzer._analyze_loop_structure(block_id)
-			if not loop_info:
-				return False
-
-			# レジスタの定義がループをまたぐか確認
-			for loop_block in loop_info.get('loop_info', {}).get('nodes', []):
-				nodes = self.analyzer._read_node_list(loop_block)
-				for node in nodes:
-					if len(node[0].split()) > 2 and reg in node[0]:
-						return True
-
-			return False
-
-		except Exception as e:
-			print(f"Error checking loop carried use: {e}")
-			return False
-
-	def _is_path_start(self, node_info: List[str]) -> bool:
-		"""
-		計算パスの開始点となるノードかを判定
-		Args:
-			node_info: ['node_id', 'operation_number', 'result_reg', 'operands...', 'LEAF']
-		Returns:
-			bool: パスの開始点となる場合True
-		"""
-		try:
-			if len(node_info) < 2:
-				return False
-
-			operation = node_info[1].split('_')[0]
-
-			# 1. loadノードからの開始
-			if operation == 'load':
-				# メモリからのロード命令で、結果レジスタを持つ場合
-				return len(node_info) >= 3 and node_info[2].startswith('%')
-
-			# 2. LEAFノードからの開始（変更なし）
-			if 'LEAF' in node_info:
-				return len(node_info) > 2
-
-			# 3. 計算ノードで始まるパス
-			operation = node_info[1].split('_')[0]  # 'add_59' -> 'add'
-			computation_opcodes = {
-				'add', 'sub', 'mul', 'div', 'and', 'or', 'xor',
-				'shl', 'lshr', 'ashr', 'icmp', 'fcmp'
-			}
-			if operation in computation_opcodes:
-				# レジスタと即値の確認
-				# node_info[2]は結果レジスタ、その後がオペランド
-				operands = node_info[3:]
-				return all(op.startswith('%') or op.isdigit() for op in operands)
-
-			return False
-
-		except Exception as e:
-			print(f"Error in is_path_start: {e}")
-			return False
 
 	def _get_array_from_reg(self, reg: str) -> Optional[str]:
 		"""
-		レジスタから対応する配列名を取得
+		レジスタから配列名を取得
 		Args:
-			reg: レジスタ名（例: @array_name や getelementptr形式）
+			reg: レジスタ文字列（例：'getelementptr_@a_29'や'getelementptr_%25_32'）
 		Returns:
-			Optional[str]: 配列名、見つからない場合はNone
+			Optional[str]: 配列名('a', 'b', 'c')またはNone
 		"""
 		try:
-			# 1. @シンボル形式の確認
-			array_match = re.search(r'@([a-zA-Z0-9_]+)', reg)
-			if array_match:
-				array_name = array_match.group(1).split('_')[0]
+			#"print(f"DEBUG: Analyzing reg: {reg}")
+
+			# パターン1: 直接的な配列アクセス (getelementptr_@a_29)
+			direct_match = re.search(r'getelementptr_@([abc])_', reg)
+			if direct_match:
+				array_name = direct_match.group(1)
+				#print(f"DEBUG: Found direct array access: {array_name}")
 				return array_name
 
-			# 2. getelementptr形式の確認
-			gep_match = re.search(r'getelementptr_([a-zA-Z0-9_]+)', reg)
-			if gep_match:
-				array_name = gep_match.group(1).split('_')[0]
-				return array_name
+			# パターン2: 中間的なアクセスの場合 (getelementptr_%25_32)
+			if reg.startswith('getelementptr_%'):
+				#print(f"DEBUG: Checking intermediate access")
+				# レジスタ番号を抽出 (例: 25_32から25を取得)
+				reg_num = reg.split('_')[1]
 
-			# 3. レジスタを使用している配列を探索
-			for block_id, nodes in self.all_nodes.items():
-				for node in nodes:
-					node_info = node[0].split()
-					if 'getelementptr' in str(node_info[1]):
-						if reg in node_info[2:]:
-							# まず現在のノードで@シンボルをチェック
-							array_match = re.search(r'@([a-zA-Z0-9_]+)', str(node_info[1]))
+				# このレジスタ番号を使用している直接配列アクセスを探す
+				for block_id, block_nodes in self.all_nodes.items():
+					for node in block_nodes:
+						node_info = node[0].split()
+						# このレジスタ番号を使用するgetelementptr_@で始まるノードを探す
+						if 'getelementptr_@' in str(node_info) and reg_num in str(node_info):
+							array_match = re.search(r'@([abc])', str(node_info))
 							if array_match:
-								return array_match.group(1).split('_')[0]
+								array_name = array_match.group(1)
+								#print(f"DEBUG: Found array {array_name} for reg {reg_num} in block {block_id}")
+								return array_name
 
 			return None
 
 		except Exception as e:
-			print(f"Error getting array from register {reg}: {e}")
+			print(f"Error in _get_array_from_reg: {e}")
 			return None
 
 	def _is_valid_operand(self, operand: str) -> bool:
@@ -577,54 +512,6 @@ class ComputeDataPath:
 			print(f"Error checking operand validity: {e}")
 			return False
 
-	def _finalize_compute_path(self, path: Dict, node_id: str, node_info: List[str]) -> Optional[Dict]:
-		"""
-		計算パスの最終化
-		Args:
-			path: 計算パス情報
-			node_id: 最終ノードのID
-			node_info: 最終ノードの情報
-		Returns:
-			最終化された計算パス
-		"""
-		try:
-			#print(f"Debug: Finalizing path {path['path_id']}")
-			#print(f"Debug: Final node info: {node_info}")
-
-			if not path.get('computation', {}).get('sequence'):
-				#print(f"Debug: Invalid path - no computation sequence")
-				return None
-
-			operation = node_info[1].split('_')[0] if len(node_info) > 1 else None
-			#print(f"Debug: Final operation: {operation}")
-
-			# store操作の場合
-			if operation == 'store':
-				array_name = self.analyzer._get_array_from_reg(node_info[3])
-				if array_name:
-					path['output'].update({
-						'type': 'memory',
-						'store_node': node_id,
-						'array': array_name,
-						'index_regs': self.analyzer._get_index_regs(node_info[3]),
-						'value_reg': node_info[2]
-					})
-			else:
-				# レジスタ出力の場合
-				if len(node_info) > 2:
-					path['output'].update({
-						'type': 'register',
-						'target_reg': node_info[2],
-						'value_reg': node_info[-1] if len(node_info) > 3 else None
-					})
-
-			#print(f"Debug: Finalized path: {path}")
-			return path
-
-		except Exception as e:
-			print(f"Error finalizing compute path: {e}")
-			return None
-
 	def _read_node_list(self, block_id: str) -> List[List[str]]:
 		"""
 		基本ブロックのノードリストを取得
@@ -643,111 +530,8 @@ class ComputeDataPath:
 			print(f"Error reading node list for block {block_id}: {e}")
 			return []
 
-	def _validate_computation_type(self, path: Dict) -> bool:
-		"""計算タイプの整合性を確認"""
-		try:
-			sequence = path['computation']['sequence']
-			if len(sequence) == 0:
-				return False
-
-			# 計算シーケンスの型チェック
-			operations = [comp['opcode'].split('_')[0] for comp in sequence]
-
-			if all(op == operations[0] for op in operations):
-				# 単一の演算タイプ
-				return True
-
-			# 複合演算パスの場合、データフローの順序を確認
-			for i in range(len(sequence)-1):
-				current_op = sequence[i]
-				next_op = sequence[i+1]
-				if next_op['output_reg'] in current_op['input_regs']:
-					# 後続の演算結果を前の演算が使用している
-					return False
-
-			return True
-
-		except Exception as e:
-			print(f"Error validating computation type: {e}")
-			return False
-
-	def _validate_compute_path(self, path: Dict) -> bool:
-		try:
-			# 1. 計算シーケンスの存在確認
-			if not path['computation']['sequence']:
-				return False
-
-			# 2. 計算タイプの整合性確認
-			if not self._validate_computation_type(path):
-				return False
-
-			# 3. データフローの一貫性チェック
-			if not self._validate_data_flow(path):
-				return False
-
-			return True
-
-		except Exception as e:  # tryブロックを閉じる
-			print(f"Error validating compute path: {e}")
-			return False
-
-	def _validate_data_flow(self, path: Dict) -> bool:
-		"""
-		データフローの一貫性を検証
-		Args:
-			path: 計算パス情報
-		Returns:
-			bool: データフローが正しい場合True
-		"""
-		try:
-			defined_regs = set()
-
-			# 1. すべての入力の収集
-			for load in path['inputs']['loads']:
-				if load.get('array'):
-					defined_regs.add(load.get('array'))
-			for leaf in path['inputs']['leafs']:
-				if leaf.get('reg'):
-					defined_regs.add(leaf['reg'])
-
-			# 2. 計算シーケンスの検証
-			for comp in path['computation']['sequence']:
-				# 使用される入力レジスタが全て定義済みか
-				for reg in comp['input_regs']:
-					if reg not in defined_regs:
-						print(f"Undefined register used: {reg}")
-						return False
-				# 出力レジスタを定義済みに追加
-				if comp['output_reg']:
-					defined_regs.add(comp['output_reg'])
-
-			# 3. パス出力の検証
-			if path['output']['type'] == 'register':
-				if path['output']['target_reg'] != path['computation']['sequence'][-1]['output_reg']:
-					print(f"Output register mismatch: {path['output']['target_reg']} vs {path['computation']['sequence'][-1]['output_reg']}")
-					return False
-
-			return True
-
-		except Exception as e:
-			print(f"Error validating data flow: {e}")
-			return False
-
 	def _init_compute_path(self, block_id: str, node_id: str, node_info: List[str]) -> Dict:
-		"""
-		計算パスの初期化
-		Args:
-			block_id: 基本ブロックID
-			node_id: 開始ノードID
-			node_info: ノード情報
-		Returns:
-			新しい計算パスの辞書
-		"""
 		try:
-			#print(f"Debug: Initializing path for block {block_id}, node {node_id}")
-			#print(f"Debug: Node info: {node_info}")
-
-			# 基本構造の初期化
 			path = {
 				'path_id': f"path_{block_id}_{node_id}",
 				'type': 'unknown',
@@ -755,7 +539,13 @@ class ComputeDataPath:
 					'loads': [],
 					'leafs': []
 				},
-				'computation': {'sequence': []},
+				'computation': {
+					'sequence': [],
+					'flow_info': CompFlowInfo(  # CompFlowInfoを追加
+						reg_flows=[],
+						block_id=block_id
+					)
+				},
 				'output': {'type': 'register', 'target_reg': node_info[2] if len(node_info) > 2 else None},
 				'loop_context': {
 					'level': None,
@@ -764,18 +554,17 @@ class ComputeDataPath:
 				}
 			}
 
-			# ループレベルの取得と設定
+			# 既存のループレベル処理
 			for level, info in self.analyzer.loop_levels.items():
 				if block_id in info.nodes:
 					path['loop_context']['level'] = level
+					path['computation']['flow_info'].loop_level = int(level)
 					break
 
 			operation = node_info[1].split('_')[0]
-			#print(f"Debug: Operation type: {operation}")
 
-			# load操作の場合の処理
+			# load操作の処理
 			if operation == 'load':
-				# 配列情報の取得
 				array_name = self.analyzer._get_array_from_reg(node_info[3])
 				if array_name:
 					load_info = {
@@ -784,94 +573,55 @@ class ComputeDataPath:
 						'node_id': node_id
 					}
 					path['inputs']['loads'].append(load_info)
-					#print(f"Debug: Added load info: {load_info}")
 					path['type'] = 'load'
 
-			#print(f"Debug: Initialized path: {path}")
 			return path
 
 		except Exception as e:
 			print(f"Error initializing compute path: {e}")
 			return None
 
-	def _find_register_definition(self, register: str, block_id: str) -> Optional[List[str]]:
-		"""
-		レジスタの定義元ノードを探す
-		Args:
-			register: レジスタ名
-			block_id: 基本ブロックID
-		Returns:
-			定義元のノード情報 または None
-		"""
+	def _add_computation_node(self, path: Dict, node_id: str, node_info: List[str], array_access_info: Dict) -> None:
 		try:
-			nodes = self.analyzer._read_node_list(block_id)
-			if not nodes:
-				return None
-
-			for node in nodes:
-				node_info = node[0].split()
-				if len(node_info) > 2 and node_info[2] == register:
-					return node_info
-
-			return None
-
-		except Exception as e:
-			print(f"Error finding register definition: {e}")
-			return None
-
-	def _add_computation_node(self, path: Dict, node_id: str, node_info: List[str]) -> None:
-		"""計算ノードを既存のパスに追加"""
-		try:
-			# 計算ノード情報を構築
 			computation = {
 				'node_id': node_id,
 				'opcode': node_info[1],
 				'input_regs': [],
-				'output_reg': node_info[2]
+				'output_reg': node_info[2],
+				'array_access': {}
 			}
 
-			# 入力レジスタの収集
 			for operand in node_info[3:]:
 				if operand.startswith('%'):
 					computation['input_regs'].append(operand)
+					if operand in array_access_info:
+						computation['array_access'][operand] = array_access_info[operand]
 
-			# シーケンスにおける最適な位置を探す
+			# RegisterFlowをself経由で使用
+			reg_flow = self.RegisterFlow(
+				reg=node_info[2],
+				opcode=node_info[1].split('_')[0],
+				operands=[op for op in node_info[3:] if self._is_valid_operand(op)],
+				output=node_info[2],
+				extra_info={'array_access': computation['array_access']}
+			)
+
+			path['computation']['flow_info'].add_flow(reg_flow)
+
+			# シーケンスへの追加
 			sequence = path['computation']['sequence']
 			if sequence:
-				# このノードの出力レジスタが既存の入力として使用されているかチェック
+				# 既存の処理
 				insert_pos = len(sequence)
 				for i, existing in enumerate(sequence):
 					if computation['output_reg'] in existing['input_regs']:
 						insert_pos = min(insert_pos, i)
 
-				# sequence[insert_pos]以降のノードの入力レジスタをinputsから削除
-				defined_regs = {comp['output_reg'] for comp in sequence[:insert_pos]}
-				path['inputs']['leafs'] = [
-					leaf for leaf in path['inputs']['leafs']
-					if leaf['reg'] not in defined_regs
-				]
-
-				# 新しいノードで使用される入力レジスタをinputsに追加
-				for reg in computation['input_regs']:
-					if reg not in defined_regs and not any(reg == comp['output_reg'] for comp in sequence):
-						path['inputs']['leafs'].append({
-							'reg': reg,
-							'node_id': node_id,
-							'use_type': 'data'
-						})
-
 				sequence.insert(insert_pos, computation)
 			else:
 				sequence.append(computation)
-				# 新しいノードの入力レジスタをinputsに追加
-				for reg in computation['input_regs']:
-					path['inputs']['leafs'].append({
-						'reg': reg,
-						'node_id': node_id,
-						'use_type': 'data'
-					})
 
-			# パスのタイプを更新
+			# パスタイプの更新
 			operation = node_info[1].split('_')[0]
 			path['type'] = self._update_path_type(path['type'], operation)
 
@@ -898,46 +648,6 @@ class ComputeDataPath:
 		except Exception as e:
 			print(f"Error updating path type: {e}")
 			return 'unknown'
-
-	def _is_reduction_operation(self, opcode: str, input_regs: List[str]) -> bool:
-		"""リダクション演算かどうかを判定"""
-		try:
-			if not input_regs or len(input_regs) < 2:
-				return False
-
-			# 同じレジスタが入力として使用されているか確認
-			# （例：add %1, %1, %2 のような形式）
-			return input_regs[0] == input_regs[1]
-
-		except Exception as e:
-			print(f"Error checking reduction operation: {e}")
-			return False
-
-	def _determine_leaf_use_type(self, node_info: List[str]) -> str:
-		"""LEAFノードの使用タイプを決定"""
-		try:
-			if len(node_info) < 2:
-				return 'unknown'
-
-			# LEAFノードの用途を推測
-			if any(node_info[i].startswith('i') for i in range(len(node_info))):
-				return 'index'  # インデックス計算用
-			elif any(node_info[i].startswith('cmp') for i in range(len(node_info))):
-				return 'control'  # 制御フロー用
-			else:
-				return 'data'  # データ値
-
-		except Exception as e:
-			print(f"Error determining leaf use type: {e}")
-			return 'unknown'
-
-	def _is_computation_node(self, node_info: List[str]) -> bool:
-		"""計算ノードかどうかを判定"""
-		computation_opcodes = {
-			'add', 'sub', 'mul', 'div', 'and', 'or', 'xor',
-			'shl', 'lshr', 'ashr', 'icmp', 'fcmp'
-		}
-		return any(node_info[1].startswith(op) for op in computation_opcodes)
 
 	def _analyze_path_dependencies(self) -> List[Dict]:
 		"""パス間の依存関係を分析"""
@@ -1076,7 +786,6 @@ class ComputeDataPath:
 				return True
 
 			# インデックス計算式の解析が必要な場合
-			# （現時点では簡易的な実装）
 			common_indices = set(indices1) & set(indices2)
 			return len(common_indices) > 0
 
@@ -1085,14 +794,15 @@ class ComputeDataPath:
 			return False
 
 class Analyzer:
-	def __init__(self, r_file_path: str, r_file_name: str):
+	def __init__(self, r_file_path: str, r_name: str):
+		#print("\nDEBUG: Initializing Analyzer")
 		self.r_path = r_file_path
-		self.r_name = r_file_name
+		self.r_name = r_name
 		self.loops = self._read_loop_structure()
-		self.array_patterns: Dict = {}
-		self.pointer_regs_info: Dict = {}
-		self.store_load_deps: Dict = {}
-		self.cfg_connectivity: Dict = {}
+		self.array_patterns = {'array_patterns': {}}
+		self.pointer_regs_info = {}
+		self.store_load_deps = {}
+		self.cfg_connectivity = {}
 		self._node_list_cache = {}
 		self._am_cache = {}
 		self._gep_chain_cache = {}
@@ -1102,97 +812,9 @@ class Analyzer:
 		self.node_to_block = node_to_block
 		self.loop_levels = self._analyze_loop_levels()
 		self.compute_path_analyzer = ComputeDataPath(self)
-
-	def _collect_all_nodes(self):
-			"""全ての基本ブロックのノード情報を収集し、node_to_blockも作成"""
-			all_nodes = {}
-			node_to_block = {}
-			try:
-				block_ids = self._get_all_block_ids()
-
-				for block_id in block_ids:
-					nodes = self._read_node_list(block_id)
-					if nodes is None:
-						continue
-					all_nodes[block_id] = nodes
-					for node in nodes:
-						node = node[0].split()
-						if node and node[0].isdigit():
-							node_to_block[node[0]] = block_id
-
-				return all_nodes, node_to_block
-			except Exception as e:
-				print(f"Error collecting all nodes: {e}")
-				return {}
-
-	def _get_all_block_ids(self):
-		"""全ての基本ブロックIDを取得する"""
-		try:
-			#REMOVE
-			#cfg_loop_file = os.path.join(self.r_path, f"{self.r_name}_cfg_loop.txt")
-			cfg_loop_file = os.path.join(self.r_path, f"noundef_cfg_loop.txt")
-			if not os.path.exists(cfg_loop_file):
-				print(f"Warning: CFG loop file not found: {cfg_loop_file}")
-				return []
-
-			block_ids = []
-			with open(cfg_loop_file, 'r') as f:
-				import ast
-				loops = ast.literal_eval(f.read())
-				block_ids = list(set([block_id for loop in loops for block_id in loop]))
-			return block_ids
-
-		except FileNotFoundError:
-			print(f"Error: CFG loop file not found: {cfg_loop_file}")
-			return []
-		except (SyntaxError, ValueError) as e:
-			print(f"Error parsing CFG loop file: {e}")
-			return []
-		except Exception as e:
-			print(f"An unexpected error occurred: {e}")
-			return []
-
-	@functools.lru_cache(maxsize=128)
-	def _read_node_list(self, block_id: str) -> List[List[str]]:
-		"""
-		基本ブロックのノードリストを読み込み
-
-		Args:
-			block_id: 基本ブロックID
-
-		Returns:
-			List[List[str]]: [
-				[node_id, opcode, operands..., LEAF],  # LEAFノード
-				[node_id, opcode, operands...],        # 通常ノード
-				...
-			]
-			各ノードの情報を配列として返す
-			- LEAFノードは最後の要素が"LEAF"
-			- 通常ノードはオペコードとオペランドのリスト
-		"""
-		if block_id in self.nodes_cache:
-			return self.nodes_cache[block_id]
-
-		try:
-			#REMOVE
-			#file_path = os.path.join(self.r_path, f"{self.r_name}_bblock_{block_id}_node_list.txt")
-			file_path = os.path.join(self.r_path, f"noundef_bblock_{block_id}_node_list.txt")
-			if not os.path.exists(file_path):
-				print(f"Warning: Node file not found: {file_path}")
-				return []
-
-			nodes: List[List[str]] = []
-			with open(file_path, 'r') as f:
-				for line in f:
-					node = line.strip().split(',')
-					nodes.append(node)
-
-			self.nodes_cache[block_id] = nodes
-			return nodes
-
-		except Exception as e:
-			print(f"Error reading node list from {file_path}: {e}")
-			return []
+		#print("  Setting up array_dims")
+		self.array_dims = self._get_array_dimensions()
+		#print(f"  array_dims initialized: {self.array_dims}")
 
 	def _read_path_file(self, block_id: str, path_type: str) -> List[str]:
 		"""パスファイルの読み込み"""
@@ -1206,6 +828,102 @@ class Analyzer:
 			with open(path_file, 'r') as f:
 				return f.readlines()
 		except Exception:
+			return []
+
+	@functools.lru_cache(maxsize=128)
+	def _read_node_list(self, block_id: str) -> List[List[str]]:
+		"""
+		基本ブロックのノードリストを読み込み
+		"""
+		if block_id in self.nodes_cache:
+			return self.nodes_cache[block_id]
+
+		try:
+			file_path = os.path.join(self.r_path, f"noundef_bblock_{block_id}_node_list.txt")
+			if not os.path.exists(file_path):
+				print(f"Warning: Node file not found: {file_path}")
+				return []
+
+			nodes: List[List[str]] = []
+			with open(file_path, 'r') as f:
+				for line in f:
+					node = line.strip().split(',')
+					nodes.append(node)
+
+			# デバッグ出力を追加
+			#if block_id in ['5', '9', '19']:  # ループヘッダーブロックのみ出力
+			#	print(f"\nDEBUG: Contents of block {block_id} (loop header)")
+			#	for node in nodes:
+			#		node_info = node[0].split()
+			#		if len(node_info) > 1:
+			#			# 重要な命令（分岐、比較、GEP）のみ出力
+			#			if any(op in node_info[1] for op in ['br', 'icmp', 'getelementptr']):
+			#				print(f"  {' '.join(node_info)}")
+
+			self.nodes_cache[block_id] = nodes
+			return nodes
+
+		except Exception as e:
+			print(f"Error reading node list from {file_path}: {e}")
+			return []
+
+	def _read_loop_structure(self) -> List[List[str]]:
+		"""
+		ループ構造情報の読み込みと解析
+
+		Returns:
+			List[List[str]]: [
+				[node_id, ...],  # 最内ループ
+				[node_id, ...],  # 中間ループ
+				[node_id, ...],  # 最外ループ
+			]
+			内側から外側のループの順でノードIDのリストを返す
+		"""
+		try:
+			# 1. ループ構造ファイルの読み込み
+			#REMOVE
+			#loop_file_path = os.path.join(self.r_path, f"{self.r_name}_cfg_loop.txt")
+			loop_file_path = os.path.join(self.r_path, f"noundef_cfg_loop.txt")
+			if not os.path.exists(loop_file_path):
+				return []
+
+			with open(loop_file_path, 'r') as f:
+				content = f.read().strip()
+				if not content:
+					return []
+
+			# 2. ループ構造の解析
+			content = content.strip('[]')
+			loop_strs = content.split('],')
+			loops = []
+
+			# 3. 各ループの処理
+			for loop_str in loop_strs:
+				loop_str = loop_str.replace('[', '').replace(']', '')
+				nodes = []
+
+				# ループノードの抽出
+				for node in loop_str.split(','):
+					node = node.strip().strip("'").strip('"')
+					if node:  # 空のノードは除外
+						nodes.append(node)
+
+				if nodes:  # 空のループは除外
+					loops.append(nodes)
+
+			# 4. ループの検証
+			validated_loops = []
+			for loop in loops:
+				# 各ループが最低2つのノードを持つことを確認
+				if len(loop) >= 2:
+					validated_loops.append(loop)
+				else:
+					print(f"Warning: Invalid loop structure detected: {loop}")
+
+			return validated_loops
+
+		except Exception as e:
+			print(f"Error reading loop structure: {e}")
 			return []
 
 	def _path_formatter(self, paths: List[str]) -> List[List[List[str]]]:
@@ -1319,6 +1037,91 @@ class Analyzer:
 		if len(formatted_paths) == 1:
 			return formatted_paths[0]
 		return formatted_paths
+
+	def _determine_index_dimension(self, node: List[str], index_position: int) -> int:
+		"""
+		getelementptrのインデックスが何次元目のアクセスに使用されているか判断
+		Args:
+			node: getelementptrノードの情報
+			index_position: インデックスの位置
+		Returns:
+			次元番号（0から開始）または-1（エラー時）
+		"""
+		try:
+			# getelementptrの型情報からインデックスの次元を判断
+			dimension_count = 0
+			for i, token in enumerate(node):
+				if token.startswith('%') and token != '%0':
+					if i == index_position:
+						return dimension_count
+					dimension_count += 1
+			return -1
+
+		except Exception as e:
+			print(f"Error determining index dimension: {e}")
+			return -1
+
+	def _detect_array_access(self, block_id, pointer_regs):
+		"""
+		ブロック内の配列アクセスを検出
+
+		Args:
+			block_id: ブロックID
+			pointer_regs: ポインタレジスタ情報
+
+		Returns:
+			{
+				'mem_ops': {
+					'loads': [load_info, ...],
+					'stores': [store_info, ...]
+				},
+				'store_deps': {
+					store_line_num: {
+						'loads': [load_info, ...]
+					}
+				}
+			} or None
+		"""
+		try:
+			nodes = self._read_node_list(block_id)
+			if not nodes:
+				return None
+
+			mem_ops = {'loads': [], 'stores': []}
+			store_deps = {}
+
+			for line_num, node in enumerate(nodes):
+				node = node[0].split()
+				if len(node) > 1:
+					if 'load' in node[1]:
+						for pointer_reg in pointer_regs:
+							if pointer_reg["block_id"] == block_id:
+								for index_reg in pointer_reg["index_regs"]["regs"]:
+									if index_reg in str(node):
+										mem_ops['loads'].append({'line_num': line_num})
+										break
+					elif 'store' in node[1]:
+						for pointer_reg in pointer_regs:
+							if pointer_reg["block_id"] == block_id:
+								for index_reg in pointer_reg["index_regs"]["regs"]:
+									if index_reg in str(node):
+										mem_ops['stores'].append({'line_num': line_num, 'value': node[2]})
+										break
+
+			if mem_ops['loads'] or mem_ops['stores']:
+				return {'mem_ops': mem_ops, 'store_deps': store_deps}
+			else:
+				return None
+
+		except Exception as e:
+			print(f"Error detecting array access in block {block_id}: {e}")
+			return None
+
+	def _paths_equal(self, path1, path2):
+		"""パスが等しいかどうかを判定"""
+		if len(path1['blocks']) != len(path2['blocks']):
+			return False
+		return path1['blocks'] == path2['blocks']
 
 	def _find_begin_geps(self, block_id: str) -> List[Dict[str, Any]]:
 		"""
@@ -1540,381 +1343,114 @@ class Analyzer:
 			print(f"Error finding forward loads in block {target_block}: {e}")
 			return result
 
-	def _collect_memory_ops(self,
-			node_info: List[List[str]],
-			reg_list: List[str]) -> Tuple[Dict[int, MemoryOp], Dict[int, MemoryOp]]:
+	def _is_loop_carried_register(self, reg: str, block_id: str, loop_info: Dict) -> bool:
 		"""
-		store/load命令の収集
+		レジスタがループ伝搬依存を持つか判定
 		Args:
-			node_info: ノードの情報リスト [[opcode, operands...], ...]
-			reg_list: 対象レジスタのリスト
+			reg: 検査対象レジスタ
+			block_id: 基本ブロックID
+			loop_info: ループ構造情報
 		Returns:
-			stores: {
-				line_num: MemoryOp(reg_addr=str, reg_val=str)
-				# store命令の行番号をキーとするメモリ操作情報
-			}
-			loads: {
-				line_num: MemoryOp(reg_addr=str, reg_val=str)
-				# load命令の行番号をキーとするメモリ操作情報
-			}
-		"""
-		stores: Dict[int, MemoryOp] = {}
-		loads: Dict[int, MemoryOp] = {}
-
-		try:
-			# 入力パラメータの検証
-			if not node_info or not reg_list:
-				return stores, loads
-
-			# 各ノードの解析
-			for line_num, node in enumerate(node_info):
-				node = node[0].split()
-				if len(node) < 2:
-					continue
-
-				# レジスタ使用の確認
-				if not any(reg in str(node) for reg in reg_list):
-					continue
-
-				# store命令の解析
-				if 'store' in node[1]:
-					if len(node) >= 5:			# store命令は最低5つの要素が必要
-						stores[line_num] = MemoryOp(
-							reg_addr=node[3],	# アドレスレジスタ
-							reg_val=node[4]		# 格納値レジスタ
-						)
-
-				# load命令の解析
-				elif 'load' in node[1]:
-					if len(node) >= 4:			# load命令は最低4つの要素が必要
-						loads[line_num] = MemoryOp(
-							reg_addr=node[3],	# アドレスレジスタ
-							reg_val=node[2]		# 格納先レジスタ
-						)
-
-			return stores, loads
-
-		except Exception as e:
-			print(f"Error collecting memory operations: {e}")
-			print("Context - Node info length:", len(node_info), "Reg list length:", len(reg_list))
-			return stores, loads
-
-	def _read_loop_structure(self) -> List[List[str]]:
-		"""
-		ループ構造情報の読み込みと解析
-
-		Returns:
-			List[List[str]]: [
-				[node_id, ...],  # 最内ループ
-				[node_id, ...],  # 中間ループ
-				[node_id, ...],  # 最外ループ
-			]
-			内側から外側のループの順でノードIDのリストを返す
+			bool: ループ伝搬依存の有無
 		"""
 		try:
-			# 1. ループ構造ファイルの読み込み
-			#REMOVE
-			#loop_file_path = os.path.join(self.r_path, f"{self.r_name}_cfg_loop.txt")
-			loop_file_path = os.path.join(self.r_path, f"noundef_cfg_loop.txt")
-			if not os.path.exists(loop_file_path):
-				return []
+			if not loop_info['edges']['loop_carried']:
+				return False
 
-			with open(loop_file_path, 'r') as f:
-				content = f.read().strip()
-				if not content:
-					return []
+			nodes = self._read_node_list(block_id)
+			if not nodes:
+				return False
 
-			# 2. ループ構造の解析
-			content = content.strip('[]')
-			loop_strs = content.split('],')
-			loops = []
+			# レジスタの定義位置を確認
+			for line_num, node in enumerate(nodes):
+				node - node[0].split()
+				if len(node) > 2 and reg in node[1]:
+					# レジスタがループヘッダで定義され、ループ内で使用される場合
+					if (loop_info['loop_info']['current']['is_header'] and
+						any(self._is_reg_used_in_block(reg, loop_node)
+							for loop_node in loop_info['loop_info']['nodes'])):
+						return True
 
-			# 3. 各ループの処理
-			for loop_str in loop_strs:
-				loop_str = loop_str.replace('[', '').replace(']', '')
-				nodes = []
-
-				# ループノードの抽出
-				for node in loop_str.split(','):
-					node = node.strip().strip("'").strip('"')
-					if node:  # 空のノードは除外
-						nodes.append(node)
-
-				if nodes:  # 空のループは除外
-					loops.append(nodes)
-
-			# 4. ループの検証
-			validated_loops = []
-			for loop in loops:
-				# 各ループが最低2つのノードを持つことを確認
-				if len(loop) >= 2:
-					validated_loops.append(loop)
-				else:
-					print(f"Warning: Invalid loop structure detected: {loop}")
-
-			return validated_loops
+			return False
 
 		except Exception as e:
-			print(f"Error reading loop structure: {e}")
-			return []
+			print(f"Error checking loop carried register {reg}: {e}")
+			return False
 
-	def _analyze_loop_levels(self) -> Dict[str, LoopInfo]:
-		result: Dict[str, LoopInfo] = {}
-
-		try:
-			if not self.loops:
-				print("No loops found in the program")
-				return result
-
-			#print(f"  Analyzing loop structure:")
-			#print(f"    Found {len(self.loops)} loop levels")
-
-			for idx, loop_nodes in enumerate(reversed(self.loops)):
-				level = str(len(self.loops) - idx)
-				#print(f"\n    Analyzing loop level {level}:")
-				#print(f"      Nodes: {loop_nodes}")
-
-				parent_level = str(int(level) + 1) if int(level) < len(self.loops) else ""
-				children_levels = [str(int(level) - 1)] if int(level) > 1 else []
-
-				array_dims = self._collect_array_dimensions_for_loop(loop_nodes)
-				#print(f"      Array dimensions: {array_dims}")
-
-				result[level] = LoopInfo(
-					nodes=loop_nodes,
-					header=loop_nodes[0],
-					exit=loop_nodes[-1],
-					parent=parent_level,
-					children=children_levels,
-					array_dims=array_dims
-				)
-
-			return result
-
-		except Exception as e:
-			print(f"Error analyzing loop levels: {e}")
-			return result
-
-	def _collect_array_dimensions_for_loop(self, loop_nodes: List[str]) -> Dict[str, Dict[str, int]]:
-		"""ループ内の配列アクセス次元を収集"""
-		array_dims = {}
-		try:
-			for block_id in loop_nodes:
-				nodes = self._read_node_list(block_id)
-				if not nodes:
-					continue
-
-				for node in nodes:
-					node = node[0].split()
-					if 'getelementptr' in str(node[1]):
-						array_match = re.search(r'@([a-zA-Z0-9_]+)', str(node[1]))
-						if array_match:
-							array_name = array_match.group(1)
-							# インデックスの解析
-							dim_info = self._analyze_array_dimension_from_gep(node)
-							if dim_info:
-								array_dims[array_name] = dim_info
-
-			return array_dims
-
-		except Exception as e:
-			print(f"Error collecting array dimensions: {e}")
-			return {}
-
-	def _analyze_array_dimension_from_gep(self, node: List[str]) -> Optional[Dict[str, int]]:
-		"""getelementptrからアクセスされる配列の次元を分析"""
-		try:
-			# インデックス計算の解析
-			for i, token in enumerate(node):
-				if token.startswith('%') and token != '%0':
-					# このインデックスが何次元目のアクセスに使用されているか判断
-					dimension = self._determine_index_dimension(node, i)
-					if dimension >= 0:
-						size = self._get_dimension_size(node, dimension)
-						return {
-							'dimension': dimension,
-							'size': size
-						}
-			return None
-
-		except Exception as e:
-			print(f"Error analyzing array dimension from GEP: {e}")
-			return None
-
-	def _determine_index_dimension(self, node: List[str], index_position: int) -> int:
+	def _is_reg_used_in_block(self, reg: str, block_id: str) -> bool:
 		"""
-		getelementptrのインデックスが何次元目のアクセスに使用されているか判断
-		Args:
-			node: getelementptrノードの情報
-			index_position: インデックスの位置
-		Returns:
-			次元番号（0から開始）または-1（エラー時）
-		"""
-		try:
-			# getelementptrの型情報からインデックスの次元を判断
-			dimension_count = 0
-			for i, token in enumerate(node):
-				if token.startswith('%') and token != '%0':
-					if i == index_position:
-						return dimension_count
-					dimension_count += 1
-			return -1
-
-		except Exception as e:
-			print(f"Error determining index dimension: {e}")
-			return -1
-
-	def _get_dimension_size(self, node: List[str], dimension: int) -> int:
-		"""
-		配列の指定された次元のサイズを取得
-		Args:
-			node: getelementptrノードの情報
-			dimension: 次元番号
-		Returns:
-			次元のサイズまたは0（エラー時）
-		"""
-		try:
-			# 型情報からサイズを抽出する
-			# 例: [32 x [32 x i32]] から32を抽出
-			type_info = ' '.join(node)
-			matches = re.findall(r'\[(\d+) x', type_info)
-			if dimension < len(matches):
-				return int(matches[dimension])
-			return 0
-
-		except Exception as e:
-			print(f"Error getting dimension size: {e}")
-			return 0
-
-	def _detect_array_access(self, block_id, pointer_regs):
-		"""
-		ブロック内の配列アクセスを検出
-
-		Args:
-			block_id: ブロックID
-			pointer_regs: ポインタレジスタ情報
-
-		Returns:
-			{
-				'mem_ops': {
-					'loads': [load_info, ...],
-					'stores': [store_info, ...]
-				},
-				'store_deps': {
-					store_line_num: {
-						'loads': [load_info, ...]
-					}
-				}
-			} or None
+		指定したブロック内でレジスタが使用されているか確認
 		"""
 		try:
 			nodes = self._read_node_list(block_id)
-			if not nodes:
-				return None
+			return any(reg in node[0].split() for node in nodes if len(node) > 1)
+		except Exception:
+			return False
 
-			mem_ops = {'loads': [], 'stores': []}
-			store_deps = {}
-
-			for line_num, node in enumerate(nodes):
-				node = node[0].split()
-				if len(node) > 1:
-					if 'load' in node[1]:
-						for pointer_reg in pointer_regs:
-							if pointer_reg["block_id"] == block_id:
-								for index_reg in pointer_reg["index_regs"]["regs"]:
-									if index_reg in str(node):
-										mem_ops['loads'].append({'line_num': line_num})
-										break
-					elif 'store' in node[1]:
-						for pointer_reg in pointer_regs:
-							if pointer_reg["block_id"] == block_id:
-								for index_reg in pointer_reg["index_regs"]["regs"]:
-									if index_reg in str(node):
-										mem_ops['stores'].append({'line_num': line_num, 'value': node[2]})
-										break
-
-			if mem_ops['loads'] or mem_ops['stores']:
-				return {'mem_ops': mem_ops, 'store_deps': store_deps}
-			else:
-				return None
-
-		except Exception as e:
-			print(f"Error detecting array access in block {block_id}: {e}")
-			return None
-
-	def _analyze_array_paths(self, pointer_regs_info, store_load_deps, cfg_connectivity):
-		result = {}
-
+	def _get_index_regs(self, reg: str) -> List[str]:
+		"""
+		レジスタから配列インデックスに使用されるレジスタ情報を取得
+		Args:
+			reg: レジスタ名 (getelementptr形式または@シンボル形式)
+		Returns:
+			List[str]: インデックスレジスタのリスト
+		"""
 		try:
-			block_order = store_load_deps.get('block_order', {})
-			if not block_order:
-				return result
+			index_regs = []
 
-			for loop_level, blocks in block_order.items():
-				loop_blocks = blocks.get('sequence', [])
-				start_node = blocks.get('start', '')
-				end_node = blocks.get('end', '')
+			# 全基本ブロックのノードを探索
+			for block_id, nodes in self.all_nodes.items():
+				for node in nodes:
+					node_info = node[0].split()
+					if 'getelementptr' in str(node_info[1]):
+						# このregを使用するgetelementptrを探す
+						if reg in node_info[2:]:
+							# レジスタ形式のオペランドを収集
+							for operand in node_info[2:]:
+								if operand.startswith('%'):
+									if operand not in index_regs:
+										index_regs.append(operand)
 
-				if not loop_blocks or not start_node or not end_node:
-					continue
-
-				for block_id in loop_blocks:
-					for pointer_regs in pointer_regs_info:
-						if pointer_regs.get('block_id') != block_id:
-							continue
-
-						array_name = pointer_regs.get('array_name')
-						if not array_name:
-							continue
-
-						if array_name not in result:
-							result[array_name] = {'access_paths': []}
-
-						array_access = self._detect_array_access(block_id, pointer_regs)
-						if not array_access:
-							continue
-
-						index_regs = pointer_regs['index_regs']['regs']
-						index_expressions = []
-						for index_reg in index_regs:
-							path = self._trace_index_variable(index_reg, block_id, store_load_deps.get("paths"), self.nodes)
-							if path:
-								index_expression = IndexExpression(
-									base=array_name,
-									path=path,
-									source_variables=[index_reg],
-									loop_level=int(loop_level),
-									is_loop_carried=self._is_loop_carried_register(index_reg, block_id, self._analyze_loop_structure(block_id))
-								)
-								index_expressions.append(index_expression)
-
-						current_path = {
-							'blocks': [],
-							'index_expressions': index_expressions,
-							'mem_ops': {},
-							'store_deps': {},
-							'is_loop_path': False,
-							'loop_level': int(loop_level),
-							'loop_position': {
-								'start': start_node,
-								'end': end_node
-							}
-						}
-
-						self._build_forward_path(
-							block_id,
-							array_access,
-							store_load_deps,
-							cfg_connectivity,
-							current_path,
-							result[array_name]['access_paths']
-						)
-
-			return result
+			return index_regs
 
 		except Exception as e:
-			print(f"Error analyzing array paths: {e}")
-			return result
+			print(f"Error getting index registers from {reg}: {e}")
+			return []
+
+	def _get_dependency_type(self, opcode: str) -> str:
+		"""オペコードから依存関係の種類を判定"""
+		if 'load' in opcode:
+			return 'load'
+		elif 'phi' in opcode:
+			return 'phi'
+		return 'calc'
+
+	def _get_all_block_ids(self):
+		"""全ての基本ブロックIDを取得する"""
+		try:
+			#REMOVE
+			#cfg_loop_file = os.path.join(self.r_path, f"{self.r_name}_cfg_loop.txt")
+			cfg_loop_file = os.path.join(self.r_path, f"noundef_cfg_loop.txt")
+			if not os.path.exists(cfg_loop_file):
+				print(f"Warning: CFG loop file not found: {cfg_loop_file}")
+				return []
+
+			block_ids = []
+			with open(cfg_loop_file, 'r') as f:
+				import ast
+				loops = ast.literal_eval(f.read())
+				block_ids = list(set([block_id for loop in loops for block_id in loop]))
+			return block_ids
+
+		except FileNotFoundError:
+			print(f"Error: CFG loop file not found: {cfg_loop_file}")
+			return []
+		except (SyntaxError, ValueError) as e:
+			print(f"Error parsing CFG loop file: {e}")
+			return []
+		except Exception as e:
+			print(f"An unexpected error occurred: {e}")
+			return []
 
 	def _build_forward_path(self, block_id, array_access, store_load_deps, cfg_connectivity, current_path, access_paths):
 		"""
@@ -1993,726 +1529,165 @@ class Analyzer:
 			print(f"Error building forward path: {e}")
 			print(f"Context - Block: {block_id}")
 
-	def _paths_equal(self, path1, path2):
-		"""パスが等しいかどうかを判定"""
-		if len(path1['blocks']) != len(path2['blocks']):
-			return False
-		return path1['blocks'] == path2['blocks']
-
 	def _trace_index_variable(self, index_reg, start_block, paths, cfg_connectivity, loop_blocks):
-			"""Traces the definition of an index variable."""
-			path = []
-			current_reg = index_reg
-			current_block = start_block
-			visited_nodes = set()
+		"""インデックス変数の追跡を改善"""
+		#print(f"\nDEBUG: Tracing index register {index_reg} starting from block {start_block}")
+		#print(f"  Loop blocks: {loop_blocks}")
 
-			while True:
-				nodes_in_block = self.all_nodes.get(current_block)  # current_blockを使用
-				if not nodes_in_block:
-					print(f"Warning: Nodes not found for block: {current_block}")
-					break
+		# ループインデックス変数を特定
+		loop_indices = {}
+		for level, loop_info in self.loop_levels.items():
+			loop_index = self._identify_loop_index_var(loop_info.header)
+			if loop_index:
+				loop_indices[level] = loop_index
+				print(f"  Loop level {level} index: {loop_index}")
 
-				found_definition = False
-				for node_id, node in enumerate(nodes_in_block):
-					node = node[0].split()
-					if (current_block, node_id) in visited_nodes:
-						print(f"Warning: Already visited node: {(current_block, node_id)}, possible loop in data flow")
-						return None
-					visited_nodes.add((current_block, node_id))
+		trace_info = {
+			'path': [],
+			'target_reg': index_reg,
+			'leaf_node': None,
+			'derived_from_loop': None  # 追加: どのループインデックスから派生したか
+		}
 
-					if len(node) > 2 and current_reg == node[1]:
-						path.append(node_id)
-						if "phi" in node[0]:  # node[1]ではなくnode[0]をチェック
-							incoming_block = self._get_phi_incoming_block(current_block, node, cfg_connectivity)
-							if incoming_block:
-								current_block = incoming_block
-								for operand in node[2:]:
-									if operand.startswith("%") and operand != current_reg:
-										current_reg = operand
-										found_definition = True
-										break
-								if not found_definition: #phiノードのオペランドに%で始まるものがなかった場合
-									print(f"Warning: No valid operand found in phi node: {node}")
-									return None
-								break
-							else:
-								print(f"Warning: Incoming block not found for phi node in block {current_block}: {node}")
-								return None
-						elif any(op in node[0] for op in ['add', 'sub', 'mul', 'sext', 'zext', 'trunc', 'shl', 'ashr', 'lshr', 'and', 'or', 'xor']):
-							for operand in node[2:]:
-								if operand.startswith('%'):
-									current_reg = operand
-									found_definition = True
-									break
-							if not found_definition: #オペランドに%で始まるものがなかった場合
-								print(f"Warning: No valid operand found in arithmetic operation: {node}")
-								return None
-							if found_definition:
-								break
-						elif "load" in node[0]:
-							for p in paths:
-								if node_id in p:
-									sub_path = p[:p.index(node_id) + 1]
-									path.extend(reversed(sub_path[1:]))
-									current_reg = self._get_load_source_register(nodes_in_block[sub_path[0]])
-									found_definition = True
-									break
-							if found_definition:
-								break
-						else:
-							return path
+		# 追跡管理
+		tracked_nodes = set()
+		tracked_regs = set([index_reg])
+		#print(f"  Initial tracked registers: {tracked_regs}")
 
-				if not found_definition:
-					prev_block = self._get_previous_block(current_block, loop_blocks, cfg_connectivity)
-					if prev_block:
-						current_block = prev_block
-					else:
-						break
+		# すべてのループブロックを探索
+		for block_id in loop_blocks:
+			print(f"  Searching in block {block_id}")
+			nodes = self._read_node_list(block_id)
+			related_nodes = []
 
-			return path
-
-	def _get_phi_incoming_block(self, current_block, phi_node, cfg_connectivity):
-		for source_block, edges in cfg_connectivity["backward_edges"].items():
-			for edge in edges:
-				if edge["target"] == current_block:
-					for operand in phi_node[2:]:
-						if operand.startswith("%") and operand in [node.split()[1] for node in self._read_node_list(source_block)]:
-							return source_block
-		return None
-
-	def _get_previous_block(self, block_id, loop_blocks, cfg_connectivity):
-		current_index = loop_blocks.index(block_id)
-		if current_index > 0:
-			return loop_blocks[current_index - 1]
-		else:
-			for source_block, edges in cfg_connectivity["backward_edges"].items():
-				for edge in edges:
-					if edge["target"] == block_id and edge["is_loop_edge"]:
-						return edge["source"]
-		return None
-
-	def _get_load_source_register(self, load_node):
-		if "load" in load_node[1] and len(load_node) > 2:
-			return load_node[2]
-		return None
-
-	def _analyze_array_paths(self, pointer_regs_info, store_load_deps, cfg_connectivity):
-		result = {}
-
-		try:
-			block_order = store_load_deps.get('block_order', {})
-			if not block_order:
-				return result
-
-			for loop_level, blocks in block_order.items():
-				loop_blocks = blocks.get('sequence', [])
-				start_node = blocks.get('start', '')
-				end_node = blocks.get('end', '')
-
-				if not loop_blocks or not start_node or not end_node:
+			# このブロックでレジスタに関連するノードを探す
+			for node_idx, node in enumerate(nodes):
+				node_info = node[0].split()
+				if (block_id, node_idx) in tracked_nodes:
 					continue
 
-				for block_id in loop_blocks:
-					for pointer_regs in pointer_regs_info:
-						if pointer_regs.get('block_id') != block_id:
-							continue
-
-						array_name = pointer_regs.get('array_name')
-						if not array_name:
-							continue
-
-						if array_name not in result:
-							result[array_name] = {'access_paths': []}
-
-						array_access = self._detect_array_access(block_id, pointer_regs)
-						if not array_access:
-							continue
-
-						index_regs = pointer_regs['index_regs']['regs']
-						index_expressions = []
-						for index_reg in index_regs:
-							path = self._trace_index_variable(index_reg, block_id, store_load_deps.get("paths"), self.nodes)
-							if path:
-								index_expression = IndexExpression(
-									base=array_name,
-									path=path,
-									source_variables=[index_reg],
-									loop_level=int(loop_level),
-									is_loop_carried=self._is_loop_carried_register(index_reg, block_id, self._analyze_loop_structure(block_id))
-								)
-								index_expressions.append(index_expression)
-
-						current_path = {
-							'blocks': [],
-							'index_expressions': index_expressions,
-							'mem_ops': {},
-							'store_deps': {},
-							'is_loop_path': False,
-							'loop_level': int(loop_level),
-							'loop_position': {
-								'start': start_node,
-								'end': end_node
-							}
-						}
-
-						self._build_forward_path(
-							block_id,
-							array_access,
-							store_load_deps,
-							cfg_connectivity,
-							current_path,
-							result[array_name]['access_paths']
-						)
-
-			return result
-
-		except Exception as e:
-			print(f"Error analyzing array paths: {e}")
-			return result
-
-	def _analyze_node_dependencies(self,
-			current_node: str,
-			stores: Dict[int, MemoryOp],
-			loads: Dict[int, MemoryOp],
-			loop_nodes: List[str],
-			start_node: str,
-			end_node: str,
-			loop_id: str) -> Dict:
-		"""ノード間のstore-load依存関係を分析"""
-		deps = {
-			'internal_deps': {
-				'store_to_load': [],
-				'load_to_load': [],
-				'store_to_store': []
-			},
-			'external_deps': {
-				'incoming': [],
-				'outgoing': []
-			},
-			'loop_carried': {
-				'forward': [],
-				'backward': []
-			}
-		}
-
-		# 内部依存関係の分析 (既存実装)
-		deps['internal_deps'] = self._analyze_internal_dependencies(stores, loads, current_node)
-
-		# 外部依存関係の分析
-		deps['external_deps'] = self._analyze_external_dependencies(current_node, stores, loop_nodes)
-
-		# ループ伝搬依存関係の分析
-		deps['loop_carried'] = self._analyze_loop_carried_dependencies(current_node, stores, loop_nodes, start_node, end_node)
-
-		return deps
-
-	def _analyze_external_dependencies(self, current_node: str, stores: Dict[int, MemoryOp], loop_nodes: List[str]) -> Dict:
-		"""外部依存関係分析"""
-		external_deps = {'incoming': [], 'outgoing': []}
-		try:
-			current_index = loop_nodes.index(current_node)
-
-			for store_line, store_op in stores.items():
-				for next_node in loop_nodes[current_index + 1:]:
-					dependent_loads = self._find_dependent_loads(next_node, store_op.reg_addr, store_line, current_node, "", "", "")
-					if dependent_loads:
-						external_deps['outgoing'].append({
-							'from': {'node': current_node, 'line': store_line, 'op': store_op},
-							'to': {'node': next_node, 'loads': dependent_loads}
-						})
-			return external_deps
-		except ValueError:
-			print(f"Warning: Node {current_node} not found in loop nodes")
-			return external_deps
-
-	def _analyze_loop_carried_dependencies(self, current_node: str, stores: Dict[int, MemoryOp], loop_nodes: List[str], start_node: str, end_node: str) -> Dict:
-		"""ループ伝搬依存関係分析"""
-		loop_carried_deps = {'forward': [], 'backward': []}
-		try:
-			current_index = loop_nodes.index(current_node)
-
-			for store_line, store_op in stores.items():
-				if current_node == start_node:
-					dependent_loads = self._find_dependent_loads(end_node, store_op.reg_addr, store_line, current_node, "", start_node, end_node, is_loop_forward=True)
-					if dependent_loads:
-						loop_carried_deps['forward'].append({
-							'from': {'node': current_node, 'line': store_line, 'op': store_op},
-							'to': {'node': end_node, 'loads': dependent_loads}
-						})
-
-				if current_node == end_node:
-					dependent_loads = self._find_dependent_loads(start_node, store_op.reg_addr, store_line, current_node, "", start_node, end_node, is_loop_back=True)
-					if dependent_loads:
-						loop_carried_deps['backward'].append({
-							'from': {'node': current_node, 'line': store_line, 'op': store_op},
-							'to': {'node': start_node, 'loads': dependent_loads}
-						})
-
-			return loop_carried_deps
-
-		except ValueError:
-			print(f"Warning: Node {current_node} not found in loop nodes")
-			return loop_carried_deps
-
-	def _analyze_internal_dependencies(self, stores: Dict[int, MemoryOp],
-									loads: Dict[int, MemoryOp],
-									block_id: str) -> Dict:
-		"""ブロック内部の依存関係分析"""
-		internal_deps = {
-			'store_to_load': [],
-			'load_to_load': [],
-			'store_to_store': []
-		}
-
-		nodes = self._read_node_list(block_id)
-		if not nodes:
-			return internal_deps
-
-		# Store to Load依存
-		for store_line, store_op in stores.items():
-			for load_line, load_op in loads.items():
-				if store_line < load_line and store_op.reg_addr == load_op.reg_addr:
-					internal_deps['store_to_load'].append({
-						'from': {'line': store_line, 'op': store_op},
-						'to': {'line': load_line, 'op': load_op}
-					})
-
-		# Load to Load依存
-		sorted_loads = sorted(loads.items())
-		for i, (line1, load1) in enumerate(sorted_loads[:-1]):
-			for line2, load2 in sorted_loads[i+1:]:
-				if load1.reg_addr == load2.reg_addr:
-					internal_deps['load_to_load'].append({
-						'from': {'line': line1, 'op': load1},
-						'to': {'line': line2, 'op': load2}
-					})
-
-		# Store to Store依存
-		sorted_stores = sorted(stores.items())
-		for i, (line1, store1) in enumerate(sorted_stores[:-1]):
-			for line2, store2 in sorted_stores[i+1:]:
-				if store1.reg_addr == store2.reg_addr:
-					internal_deps['store_to_store'].append({
-						'from': {'line': line1, 'op': store1},
-						'to': {'line': line2, 'op': store2}
-					})
-
-		return internal_deps
-
-	def _analyze_gep_chain(self, block_id: str, start_node: str) -> List[Dict]:
-		"""
-		getelementptrのチェーンを追跡
-		Args:
-			block_id: 基本ブロックID
-			start_node: 開始ノードのID
-		Returns:
-			[
-				{
-					'node_id': str,          # ノードID
-					'array_name': str,       # 配列名（最初のgetelementptrのみ）
-					'index_reg': str,        # このノードで使用されるインデックスレジスタ
-					'dimension': int         # アクセスする次元
-				}
-			]
-		"""
-		gep_chain = []
-		try:
-			# AMファイルを使用してノード間の接続を取得
-			#REMOVE
-			#am_file = f"{self.r_name}_bblock_{block_id}"
-			am_file = f"noundef_bblock_{block_id}"
-			am_size, am = AMUtils.Preprocess(self.r_path, am_file)
-
-			# ノード情報を取得
-			nodes = self._read_node_list(block_id)
-			if not nodes:
-				return gep_chain
-
-			# 現在のノードから開始
-			current_id = start_node
-			visited = set()
-
-			while current_id and current_id not in visited:
-				visited.add(current_id)
-				current_node = nodes[int(current_id)][0].split()
-
-				if 'getelementptr' not in current_node[1]:
-					break
-
-				# ノード情報の解析
-				node_info = {
-					'node_id': current_id,
-					'array_name': None,
-					'index_reg': None,
-					'dimension': len(gep_chain)  # 次元はチェーンの長さと一致
-				}
-
-				# 配列名の抽出（最初のgetelementptrのみ）
-				if not gep_chain:  # 最初のノード
-					array_match = re.search(r'@([a-zA-Z0-9_]+)', current_node[1])
-					if array_match:
-						node_info['array_name'] = array_match.group(1).split('_')[0]
-
-				# インデックスレジスタの抽出
-				for token in current_node:
-					if token.startswith('%') and token != '%0':
-						node_info['index_reg'] = token
+				# レジスタが使用または定義されているか確認
+				reg_involved = False
+				reg_position = -1
+				for i, part in enumerate(node_info):
+					if part in tracked_regs:
+						reg_involved = True
+						reg_position = i
 						break
 
-				gep_chain.append(node_info)
+				if reg_involved:
+					tracked_nodes.add((block_id, node_idx))
 
-				# 次のgetelementptrを探す
-				next_id = None
-				current_idx = int(current_id)
-				for dst_idx in range(am_size):
-					if am[current_idx][dst_idx]:
-						dst_node = nodes[dst_idx][0].split()
-						if 'getelementptr' in dst_node[1]:
-							next_id = str(dst_idx)
-							break
+					opcode = node_info[1].split('_')[0] if len(node_info) > 1 else 'unknown'
+					if 'LEAF' in node_info:
+						opcode = 'LEAF'
 
-				current_id = next_id
+					# レジスタフロー情報を作成
+					flow = RegisterFlow(
+						reg=index_reg,
+						opcode=opcode,
+						operands=[op for op in node_info[3:] if op.startswith('%')],
+						output=node_info[2] if len(node_info) > 2 and node_info[2].startswith('%') else '',
+						extra_info={
+							'block_id': block_id,
+							'node_id': node_idx,
+							'instruction': ' '.join(node_info)
+						}
+					)
 
-			#print(f"GEP chain for block {block_id}, starting at node {start_node}:")
-			#for node in gep_chain:
-			#	print(f"  Node: {node}")
+					related_nodes.append(flow)
 
-			return gep_chain
+					# ループインデックスとの関連を確認
+					for i, part in enumerate(node_info):
+						if i >= 3:  # オペランド部分をチェック
+							# ループインデックス変数との直接の関連
+							for level, loop_idx in loop_indices.items():
+								if part == loop_idx:
+									#print(f"  Register {index_reg} directly related to loop index {loop_idx} (level {level})")
+									if not trace_info['derived_from_loop']:
+										trace_info['derived_from_loop'] = {
+											'level': level,
+											'index_reg': loop_idx,
+											'relation': 'direct',
+											'node_info': ' '.join(node_info)
+										}
 
-		except Exception as e:
-			print(f"Error analyzing GEP chain: {e}")
-			return gep_chain
+					# 新しいレジスタを追跡対象に追加
+					if len(node_info) > 2 and node_info[2].startswith('%'):
+						tracked_regs.add(node_info[2])
 
-	def _analyze_array_access(self, block_id: str, node_info: List[str]) -> Dict[str, ArrayDimInfo]:
-		"""ブロック内の配列アクセスパターンを分析"""
-		array_accesses = {}
+					# LEAFノードを特定
+					if opcode == 'LEAF':
+						trace_info['leaf_node'] = flow
 
-		try:
-			for i, node in enumerate(node_info):
-				node = node[0].split()
+			if related_nodes:
+				#print(f"  Found {len(related_nodes)} related nodes in block {block_id}")
+				new_regs = set()
+				for node in related_nodes:
+					if hasattr(node, 'output') and node.output.startswith('%'):
+						new_regs.add(node.output)
+				if new_regs:
+					#print(f"  New registers found: {new_regs}")
+					tracked_regs.update(new_regs)
+				trace_info['path'].extend(related_nodes)
 
-				# getelementptrチェーンの開始点を探す
-				if 'getelementptr' in str(node[1]):
-					# 最初のgetelementptrかどうかを確認
-					if '@' in str(node[1]):  # 配列名を持つgetelementptr
-						# gepチェーンを分析
-						gep_chain = self._analyze_gep_chain(block_id, str(i))
-						if not gep_chain:
-							continue
+		# LEAF ノードが見つからなかった場合は最後のノードを使用
+		if not trace_info['leaf_node'] and trace_info['path']:
+			trace_info['leaf_node'] = trace_info['path'][-1]
 
-						array_name = gep_chain[0]['array_name']
-						if not array_name:
-							continue
+		# ループインデックスとの関連性を確認 (間接的な関係を探る)
+		if not trace_info['derived_from_loop'] and trace_info['path']:
+			# パス内の全ノードで使用されているオペランドをチェック
+			all_operands = set()
+			for node in trace_info['path']:
+				if hasattr(node, 'operands'):
+					all_operands.update(node.operands)
 
-						# 配列アクセス情報の初期化
-						if array_name not in array_accesses:
-							array_accesses[array_name] = ArrayDimInfo(
-								array_name=array_name,
-								dim_accesses=[]
-							)
+			# ループインデックスとの間接的な関連
+			for operand in all_operands:
+				for level, loop_idx in loop_indices.items():
+					# 簡易的なチェック: オペランドからループインデックスまでの派生関係
+					# 本来はより詳細な解析が必要
+					if self._is_reg_derived_from(operand, loop_idx, start_block):
+						#print(f"  Register {index_reg} indirectly related to loop index {loop_idx} (level {level}) via {operand}")
+						if not trace_info['derived_from_loop']:
+							trace_info['derived_from_loop'] = {
+								'level': level,
+								'index_reg': loop_idx,
+								'relation': 'indirect',
+								'via_reg': operand
+							}
 
-						# チェーンの各ノードについて次元アクセス情報を収集
-						for gep_node in gep_chain:
-							if gep_node['index_reg']:  # インデックスレジスタがある場合
-								loop_level = self._find_loop_level_for_index({
-									'register': gep_node['index_reg'],
-									'position': i  # 元のノードの位置
-								}, block_id)
+		# 結果の詳細を出力
+		#if trace_info['derived_from_loop']:
+		#	print(f"  Trace result: Index register {index_reg} derived from loop level {trace_info['derived_from_loop']['level']}")
+		#else:
+		#	print(f"  Trace result: No loop index relation found for {index_reg}")
 
-								array_size = self._get_array_dimension_size(
-									array_name,
-									gep_node['dimension']
-								)
+		#print(f"  Total nodes in path: {len(trace_info['path'])}")
+		return trace_info if trace_info['path'] else None
 
-								dim_access = DimensionAccess(
-									dimension=gep_node['dimension'],
-									loop_level=loop_level,
-									array_size=array_size
-								)
-								array_accesses[array_name].dim_accesses.append(dim_access)
+	def _collect_all_nodes(self):
+			"""全ての基本ブロックのノード情報を収集し、node_to_blockも作成"""
+			all_nodes = {}
+			node_to_block = {}
+			try:
+				block_ids = self._get_all_block_ids()
 
-			return array_accesses
-
-		except Exception as e:
-			print(f"Error analyzing array access in block {block_id}: {e}")
-			return {}
-
-	def _analyze_gep_indices(self, node: List[str]) -> List[Dict]:
-		"""getelementptrのインデックスを分析"""
-		try:
-			indices = []
-			# getelementptrの構文を分析
-			for i, token in enumerate(node):
-				if token.startswith('%') and token != '%0':  # インデックスとして使用されているレジスタ
-					indices.append({
-						'register': token,
-						'position': i
-					})
-			return indices
-		except Exception as e:
-			print(f"Error analyzing GEP indices: {e}")
-			return []
-
-	def _find_loop_level_for_index(self, index_info: Dict, block_id: str) -> str:
-		try:
-			reg = index_info['register']
-			#print(f"\n  Analyzing loop level for register: {reg}")
-			#print("    Current block:", block_id)
-			#print("    Available loop levels:")
-
-			# 利用可能なループレベルの表示
-			#for level, info in self.loop_levels.items():
-			#	print(f"    Level {level} nodes: {info.nodes}")
-
-			# 最内ループから順にブロックを探す
-			for level in sorted(self.loop_levels.keys(), key=int):  # レベル順にソート
-				info = self.loop_levels[level]
-				if block_id in info.nodes:
-					#print(f"    Found block {block_id} in loop level {level}")
-					# ブロック内のノードをチェック
+				for block_id in block_ids:
 					nodes = self._read_node_list(block_id)
-					if nodes:
-						#print(f"    Checking nodes for register usage...")
-						for node in nodes:
-							node_parts = node[0].split()
-							if reg in node_parts:
-								#print(f"    Found register {reg} in node: {' '.join(node_parts)}")
-								if any(op in node_parts[1] for op in ['add', 'mul', 'phi', 'icmp', 'shl', 'or']):
-									#print(f"    Register is used in loop calculation")
-									return level
-
-					# ヘッダーブロックもチェック
-					header_nodes = self._read_node_list(info.header)
-					if header_nodes:
-						#print(f"    Checking header block {info.header}...")
-						for node in header_nodes:
-							node_parts = node[0].split()
-							if reg in node_parts and any(op in node_parts[1] for op in ['add', 'mul', 'phi', 'icmp', 'shl', 'or']):
-								#print(f"    Register is used in loop header")
-								return level
-
-					# デフォルトでそのループレベルを返す
-					return level
-
-			#print(f"    Block {block_id} not found in any loop")
-			return "unknown"
-
-		except Exception as e:
-			print(f"Error finding loop level for register {reg}: {e}")
-			print(f"Context - Block ID: {block_id}")
-			return "unknown"
-
-	def _is_register_defined_in_loop(self, reg: str, loop_nodes: List[str]) -> bool:
-		"""レジスタがループ内で定義されているか確認"""
-		try:
-			for node_id in loop_nodes:
-				nodes = self._read_node_list(node_id)
-				for node in nodes:
-					node = node[0].split()
-					if len(node) > 2 and node[2] == reg:  # レジスタが定義される位置
-						return True
-			return False
-		except Exception as e:
-			print(f"Error checking register definition: {e}")
-			return False
-
-	def _get_array_dimension_size(self, array_name: str, dimension: int) -> int:
-		"""配列の各次元のサイズを取得"""
-		try:
-			#print(f"\n  Looking for size of array {array_name}, dimension {dimension}")
-			llvm_file = os.path.join(self.r_path, f"{self.r_name}.ll")
-			if not os.path.exists(llvm_file):
-				print(f"    LLVM file not found: {llvm_file}")
-				return 0
-
-			with open(llvm_file, 'r') as f:
-				for line in f:
-					if f'@{array_name} =' in line:
-						#print(f"    Found array definition: {line.strip()}")
-						matches = re.findall(r'\[(\d+) x', line)
-						#print(f"    Found dimensions: {matches}")
-						if dimension < len(matches):
-							return int(matches[dimension])
-
-			print(f"    Warning: No size information found for array {array_name}, dimension {dimension}")
-			return 0
-
-		except Exception as e:
-			print(f"Error getting array dimension size: {e}")
-			return 0
-
-	def _analyze_array_access_patterns(self, block_id: str, pointer_regs_info: List[Dict]) -> Dict:
-		"""ブロック内の配列アクセスパターンを分析"""
-		array_accesses = {}
-		#REMOVE
-		#node_list_path = os.path.join(self.r_path, f"{self.r_name}_bblock_{block_id}_node_list.txt")
-		node_list_path = os.path.join(self.r_path, f"noundef_{block_id}_node_list.txt")
-		#bpath_st_ld_path = os.path.join(self.r_path, f"{self.r_name}_bblock_{block_id}_bpath_st_ld.txt")
-		bpath_st_ld_path = os.path.join(self.r_path, f"noundef_bblock_{block_id}_bpath_st_ld.txt")
-
-		print(f"  Analyzing Array Access Pattern")
-
-		if not os.path.exists(node_list_path) or not os.path.exists(bpath_st_ld_path):
-			print("    File not found")
-			return array_accesses
-
-		array_accesses = {}
-		for pointer_regs in pointer_regs_info:
-			array_name = pointer_regs["array_name"]
-			if array_name is None:
-				print("Could not find array name in pointer_regs_info")
-				continue
-
-			with open(bpath_st_ld_path, 'r') as f:
-				for line in f:
-					st_ld_paths = self._path_formatter(line)
-					if not st_ld_paths:
+					if nodes is None:
 						continue
-					store_id = st_ld_paths[0][0]
-					load_ids = []
-					for st_ld_path in st_ld_paths:
-						load_ids.append(st_ld_path[-1])
+					all_nodes[block_id] = nodes
+					for node in nodes:
+						node = node[0].split()
+						if node and node[0].isdigit():
+							node_to_block[node[0]] = block_id
 
-					if not load_ids:
-						continue
-					if array_name not in array_accesses:
-						array_accesses[array_name] = {"access_paths": []}
-					array_accesses[array_name]["access_paths"].append({
-						"store_id": store_id,
-						"load_ids": load_ids,
-						"defined_reg":pointer_regs['index_regs']['regs']
-					})
-
-		return array_accesses
-
-	def _analyze_cfg_connectivity(self,
-			block_id: str,
-			loop_nodes: List[str]) -> Dict:
-		"""
-		CFGベースの連結性分析
-		Args:
-			block_id: 基本ブロックID
-			loop_nodes: ループノードのリスト
-		Returns:
-			{
-				'forward_edges': {
-					block_id: [
-						{
-							'target': str,        # 接続先ブロックID
-							'is_loop_edge': bool, # ループエッジか
-							'edge_type': str      # 'normal'/'loop_forward'/'loop_back'
-						}
-					]
-				},
-				'backward_edges': {
-					block_id: [
-						{
-							'source': str,        # 接続元ブロックID
-							'is_loop_edge': bool, # ループエッジか
-							'edge_type': str      # 'normal'/'loop_forward'/'loop_back'
-						}
-					]
-				}
-			}
-		"""
-		result = {
-			'forward_edges': {},
-			'backward_edges': {}
-		}
-
-		try:
-			print(f"  Analyzing CFG Connectivity")
-			# 入力パラメータの検証
-			if not loop_nodes or block_id not in loop_nodes:
-				return result
-
-			# ループの基本情報
-			loop_start = loop_nodes[0]
-			loop_end = loop_nodes[-1]
-			current_idx = loop_nodes.index(block_id)
-
-			# 順方向エッジの分析
-			result['forward_edges'][block_id] = []
-
-			# 通常の順方向エッジ
-			if current_idx < len(loop_nodes) - 1:
-				next_block = loop_nodes[current_idx + 1]
-				result['forward_edges'][block_id].append({
-					'target': next_block,
-					'is_loop_edge': False,
-					'edge_type': 'normal'
-				})
-
-			# ループの始端から終端へのエッジ
-			if block_id == loop_start:
-				result['forward_edges'][block_id].append({
-					'target': loop_end,
-					'is_loop_edge': True,
-					'edge_type': 'loop_forward'
-				})
-
-			# 逆方向エッジの分析
-			result['backward_edges'][block_id] = []
-
-			# 通常の逆方向エッジ
-			if current_idx > 0:
-				prev_block = loop_nodes[current_idx - 1]
-				result['backward_edges'][block_id].append({
-					'source': prev_block,
-					'is_loop_edge': False,
-					'edge_type': 'normal'
-				})
-
-			# ループの終端から始端へのエッジ
-			if block_id == loop_end:
-				result['backward_edges'][block_id].append({
-					'source': loop_start,
-					'is_loop_edge': True,
-					'edge_type': 'loop_back'
-				})
-
-			return result
-
-		except Exception as e:
-			print(f"Error in analyzing CFG connectivity: {e}")
-			print(f"Context - Block ID: {block_id}, Loop nodes: {loop_nodes}")
-			return result
-
-
-	def _get_index_regs(self, reg: str) -> List[str]:
-		"""
-		レジスタから配列インデックスに使用されるレジスタ情報を取得
-		Args:
-			reg: レジスタ名 (getelementptr形式または@シンボル形式)
-		Returns:
-			List[str]: インデックスレジスタのリスト
-		"""
-		try:
-			index_regs = []
-
-			# 全基本ブロックのノードを探索
-			for block_id, nodes in self.all_nodes.items():
-				for node in nodes:
-					node_info = node[0].split()
-					if 'getelementptr' in str(node_info[1]):
-						# このregを使用するgetelementptrを探す
-						if reg in node_info[2:]:
-							# レジスタ形式のオペランドを収集
-							for operand in node_info[2:]:
-								if operand.startswith('%'):
-									if operand not in index_regs:
-										index_regs.append(operand)
-
-			return index_regs
-
-		except Exception as e:
-			print(f"Error getting index registers from {reg}: {e}")
-			return []
-
-	def _get_block_id_from_node_id(self, node_id: str) -> str:
-		"""ノードIDからブロックIDを取得"""
-		#print(f"self.node_to_block:{self.node_to_block.get(node_id)}")
-		return self.node_to_block.get(node_id)
+				return all_nodes, node_to_block
+			except Exception as e:
+				print(f"Error collecting all nodes: {e}")
+				return {}
 
 	def _collect_index_registers(self,
 			block_id: str,
@@ -2792,6 +1767,25 @@ class Analyzer:
 			print(f"Error collecting index registers: {e}")
 			return array_name, {'regs': [], 'array_dim': 0, 'dependencies': {}}
 
+	def _collect_from_begin(self, ld_node_ids, leaf_paths, nodes):
+		"""始端ノードからのレジスタ収集"""
+		registers = []
+		try:
+			for ld_node_id in ld_node_ids:
+				for leaf_path_str in leaf_paths:
+					leaf_paths = self._path_formatter2(leaf_path_str)
+					for leaf_path in leaf_paths:
+						if str(ld_node_id) in str(leaf_path[0]):
+							leaf_node = nodes[int(leaf_path[-1])][0].split()
+							if leaf_node[-1] == 'LEAF' and leaf_node[1].startswith('%'):
+								reg = leaf_node[1]
+								if reg not in registers:
+									registers.append(reg)
+			return registers
+
+		except Exception:
+			return registers
+
 	def _collect_from_terminal(self, term_node_id: str, ld_paths: List[str], nodes: List[List[str]]) -> List[str]:
 			"""終端ノードからのレジスタ収集"""
 			registers = []
@@ -2828,24 +1822,888 @@ class Analyzer:
 				print(f"Error in _collect_from_terminal: {e}")
 			return array_name, registers, start_node_ids
 
-	def _collect_from_begin(self, ld_node_ids, leaf_paths, nodes):
-		"""始端ノードからのレジスタ収集"""
-		registers = []
-		try:
-			for ld_node_id in ld_node_ids:
-				for leaf_path_str in leaf_paths:
-					leaf_paths = self._path_formatter2(leaf_path_str)
-					for leaf_path in leaf_paths:
-						if str(ld_node_id) in str(leaf_path[0]):
-							leaf_node = nodes[int(leaf_path[-1])][0].split()
-							if leaf_node[-1] == 'LEAF' and leaf_node[1].startswith('%'):
-								reg = leaf_node[1]
-								if reg not in registers:
-									registers.append(reg)
-			return registers
+	def _analyze_array_paths(self, pointer_regs_info, store_load_deps, cfg_connectivity):
+		result = {}
 
-		except Exception:
-			return registers
+		try:
+			block_order = store_load_deps.get('block_order', {})
+			if not block_order:
+				return result
+
+			for loop_level, blocks in block_order.items():
+				loop_blocks = blocks.get('sequence', [])
+				start_node = blocks.get('start', '')
+				end_node = blocks.get('end', '')
+
+				if not loop_blocks or not start_node or not end_node:
+					continue
+
+				for block_id in loop_blocks:
+					for pointer_regs in pointer_regs_info:
+						if pointer_regs.get('block_id') != block_id:
+							continue
+
+						array_name = pointer_regs.get('array_name')
+						if not array_name:
+							continue
+
+						if array_name not in result:
+							result[array_name] = {'access_paths': []}
+
+						array_access = self._detect_array_access(block_id, pointer_regs)
+						if not array_access:
+							continue
+
+						index_regs = pointer_regs['index_regs']['regs']
+						index_expressions = []
+						for index_reg in index_regs:
+							path = self._trace_index_variable(index_reg, block_id, store_load_deps.get("paths"), self.nodes)
+							if path:
+								index_expression = IndexExpression(
+									base=array_name,
+									path=path,
+									source_variables=[index_reg],
+									loop_level=int(loop_level),
+									is_loop_carried=self._is_loop_carried_register(index_reg, block_id, self._analyze_loop_structure(block_id))
+								)
+								index_expressions.append(index_expression)
+
+						current_path = {
+							'blocks': [],
+							'index_expressions': index_expressions,
+							'mem_ops': {},
+							'store_deps': {},
+							'is_loop_path': False,
+							'loop_level': int(loop_level),
+							'loop_position': {
+								'start': start_node,
+								'end': end_node
+							}
+						}
+
+						self._build_forward_path(
+							block_id,
+							array_access,
+							store_load_deps,
+							cfg_connectivity,
+							current_path,
+							result[array_name]['access_paths']
+						)
+
+			return result
+
+		except Exception as e:
+			print(f"Error analyzing array paths: {e}")
+			return result
+
+	# ループヘッダーブロックからインデックス変数を特定
+	def _identify_loop_index_var(self, header_block: str) -> str:
+		"""ループヘッダーブロックからインデックス変数を特定"""
+		nodes = self._read_node_list(header_block)
+		for node in nodes:
+			node_info = node[0].split()
+			if 'icmp' in node_info[1]:  # 比較命令を探す
+				# 比較の左オペランドがループインデックス
+				if len(node_info) > 4 and node_info[3].startswith('%'):
+					return node_info[3]
+		return None
+
+	# GEP命令で使用されるインデックスがどのループレベル由来かを特定
+	def _trace_index_to_loop_level(self, index_reg: str) -> Dict[str, str]:
+		"""
+		インデックスレジスタがどのループレベルのインデックスから派生したかを追跡
+		"""
+		#print(f"\nDEBUG: Tracing index register {index_reg} to loop level")
+
+		result = {}
+
+		# 1. 各ループレベルのソースインデックス変数を特定
+		loop_sources = {}  # {level: (memory_var, loop_counter)}
+		for level, loop_info in self.loop_levels.items():
+			header_block = loop_info.header
+			nodes = self._read_node_list(header_block)
+
+			# ループカウンタを見つける (icmp命令のオペランド)
+			loop_counter = None
+			for node in nodes:
+				node_info = node[0].split()
+				if len(node_info) > 1 and 'icmp' in node_info[1]:
+					if len(node_info) >= 4 and node_info[3].startswith('%'):
+						loop_counter = node_info[3]
+						break
+
+			# ループカウンタのソース変数を見つける
+			source_var = None
+			if loop_counter:
+				for node in nodes:
+					node_info = node[0].split()
+					if len(node_info) > 2 and node_info[2] == loop_counter:
+						if 'load' in node_info[1] and len(node_info) > 3:
+							source_var = node_info[3]
+							break
+
+			if loop_counter and source_var:
+				loop_sources[level] = (source_var, loop_counter)
+				#print(f"  Loop level {level}: source={source_var}, counter={loop_counter}")
+
+		# 2. インデックスレジスタの定義と使用箇所の探索
+		for level, loop_info in self.loop_levels.items():
+			sources = loop_sources.get(level, (None, None))
+
+			if not sources[0] or not sources[1]:
+				continue
+
+			#print(f"  Checking if {index_reg} is derived from loop level {level}")
+			#print(f"    Loop source: {sources[0]}, counter: {sources[1]}")
+
+			# ループの各ブロックを探索
+			for block_id in loop_info.nodes:
+				nodes = self._read_node_list(block_id)
+
+				# このレジスタの定義または使用を探す
+				for node in nodes:
+					node_info = node[0].split()
+
+					# 定義を探す
+					if len(node_info) > 2 and node_info[2] == index_reg:
+						#print(f"    Found definition in block {block_id}: {' '.join(node_info)}")
+
+						# ソースオペランドをチェック
+						for i in range(3, len(node_info)):
+							operand = node_info[i]
+
+							# 直接のループソースまたはカウンタとの一致
+							if operand == sources[0] or operand == sources[1]:
+								#print(f"    Direct match: {operand} is loop level {level} variable")
+								result[index_reg] = level
+								return result
+
+							# 間接的な依存関係を探索
+							if operand.startswith('%'):
+								# オペランドがループ変数から派生したものか再帰的に確認
+								if self._is_derived_from_loop_var(operand, sources[0], sources[1], block_id):
+									#print(f"    Indirect match: {index_reg} derived from loop level {level} via {operand}")
+									result[index_reg] = level
+									return result
+
+		# 3. 追加のヒューリスティック: GEP命令でのアクセスパターンを分析
+		if not result:
+			#print(f"  No direct derivation found, checking GEP patterns")
+			result = self._analyze_gep_patterns(index_reg)
+
+		if not result:
+			print(f"  Failed to trace {index_reg} to any loop level")
+
+		return result
+
+	def _is_derived_from_loop_var(self, reg: str, source_var: str, loop_counter: str, block_id: str, visited: Set[str] = None) -> bool:
+		"""
+		レジスタがループ変数（ソースまたはカウンタ）から派生したものか確認
+		"""
+		if visited is None:
+			visited = set()
+
+		if reg in visited:
+			return False
+
+		visited.add(reg)
+
+		# 直接の一致
+		if reg == source_var or reg == loop_counter:
+			return True
+
+		# このレジスタの定義を探す
+		for check_block in self.all_nodes.keys():
+			nodes = self._read_node_list(check_block)
+
+			for node in nodes:
+				node_info = node[0].split()
+
+				# 定義を見つけた
+				if len(node_info) > 2 and node_info[2] == reg:
+					# ソースオペランドを確認
+					for i in range(3, len(node_info)):
+						if i < len(node_info) and node_info[i].startswith('%'):
+							# 再帰的に確認
+							if self._is_derived_from_loop_var(node_info[i], source_var, loop_counter, check_block, visited):
+								return True
+
+		return False
+
+	def _analyze_gep_patterns(self, index_reg: str) -> Dict[str, str]:
+		"""
+		GEP命令のパターンを分析してループレベルを推定
+		"""
+		result = {}
+
+		# GEP命令でのインデックスレジスタの使用を探す
+		for block_id, nodes in self.all_nodes.items():
+			for node in nodes:
+				node_info = node[0].split()
+
+				if 'getelementptr' in str(node_info[1]):
+					# 配列名を抽出
+					array_match = re.search(r'@([a-zA-Z0-9_]+)', str(node_info[1]))
+					if not array_match:
+						continue
+
+					array_name = array_match.group(1).split('_')[0]
+
+					# この命令でインデックスレジスタが使用されているか確認
+					index_positions = []
+					for i, part in enumerate(node_info):
+						if part == index_reg:
+							# インデックスの位置（次元）を特定
+							dim_idx = i - 3  # 通常、GEPでは位置-3が次元インデックス
+							if dim_idx >= 0:
+								index_positions.append(dim_idx)
+
+					if not index_positions:
+						continue
+
+					print(f"  Found {index_reg} used in GEP for array {array_name}, dimensions: {index_positions}")
+
+					# 行列積のパターンを認識するヒューリスティック
+					# a[i][k], b[k][j], c[i][j] という典型的なパターン
+					if array_name == 'a' and 0 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 3 (i) for array {array_name}")
+						result[index_reg] = '3'  # i
+					elif array_name == 'a' and 1 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 1 (k) for array {array_name}")
+						result[index_reg] = '1'  # k
+					elif array_name == 'b' and 0 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 1 (k) for array {array_name}")
+						result[index_reg] = '1'  # k
+					elif array_name == 'b' and 1 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 2 (j) for array {array_name}")
+						result[index_reg] = '2'  # j
+					elif array_name == 'c' and 0 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 3 (i) for array {array_name}")
+						result[index_reg] = '3'  # i
+					elif array_name == 'c' and 1 in index_positions:
+						print(f"  Heuristic: {index_reg} likely from loop level 2 (j) for array {array_name}")
+						result[index_reg] = '2'  # j
+
+		return result
+
+	# レジスタの同一性チェック強化のための新しいヘルパー関数
+	def _track_register_equivalence(self, block_id: str, src_reg: str, all_registers: Dict[str, Set[str]]):
+		"""
+		指定したブロック内で、ソースレジスタから値が流れる先のレジスタを追跡
+		"""
+		if src_reg not in all_registers:
+			all_registers[src_reg] = {src_reg}
+
+		nodes = self._read_node_list(block_id)
+
+		# 追加するレジスタを一時セットに保存
+		new_equivalent_regs = set()
+
+		for node in nodes:
+			node_info = node[0].split()
+			if len(node_info) < 3:
+				continue
+
+			# 基本的な値の転送を検出（load命令など）
+			if node_info[1].startswith('load') and len(node_info) > 3:
+				dest_reg = node_info[2]  # ロード先レジスタ
+				addr_reg = node_info[3]  # アドレスレジスタ
+
+				# アドレスレジスタとソースレジスタが関連している場合
+				if addr_reg == src_reg or any(addr_reg == r for r in all_registers[src_reg]):
+					if dest_reg not in all_registers:
+						all_registers[dest_reg] = {dest_reg}
+
+					# 新しい等価レジスタを一時セットに追加
+					new_equivalent_regs.add(dest_reg)
+					for r in all_registers[src_reg]:
+						new_equivalent_regs.add(r)
+
+		# イテレーション後にセットを更新
+		for reg in new_equivalent_regs:
+			if reg in all_registers:
+				all_registers[reg].update(new_equivalent_regs)
+
+		return all_registers
+
+	def _identify_loop_indices_with_details(self) -> Dict[str, Dict[str, Any]]:
+		"""各ループレベルのインデックス変数を詳細に特定する"""
+		#print("\n=====DEBUG: Identifying loop indices with enhanced method=====")
+		loop_indices = {}
+
+		# self.loop_levelsが存在することを確認
+		if not hasattr(self, 'loop_levels') or not self.loop_levels:
+			print("Warning: loop_levels is not available or empty")
+			return loop_indices
+
+		# レジスタ同一性追跡用の辞書
+		reg_equivalence = {}  # {reg: set(equivalent_regs)}
+
+		# 各ループレベルを処理
+		for level, loop_info in self.loop_levels.items():
+			header_block = loop_info.header
+			#print(f"\nDEBUG: Analyzing loop level {level}")
+			#print(f"  Header: {header_block}")
+
+			# ヘッダーブロックのノードを取得
+			header_nodes = self._read_node_list(header_block)
+
+			# ループインデックス情報を初期化
+			level_info = {
+				'counter': None,     # ループカウンタレジスタ
+				'source': None,      # ソースメモリ変数
+				'equivalent_regs': set(),  # 同値のレジスタ集合（新規追加）
+				'sext_outputs': set(),     # sextの出力レジスタ（新規追加）
+				'node_info': {}      # 関連ノード情報
+			}
+
+			# 1. icmp命令を探してループカウンタを特定
+			for i, node in enumerate(header_nodes):
+				node_info = node[0].split()
+				if len(node_info) > 1 and 'icmp' in node_info[1]:
+					#print(f"  Found icmp in header: {' '.join(node_info)}")
+
+					# icmp命令の詳細な解析
+					# 通常、icmp命令は比較演算子、比較値1、比較値2の形式
+					# 例: icmp slt i32 %6, 32
+					# この場合、%6がループカウンタとなる可能性が高い
+
+					# すべてのオペランドをチェック
+					for j in range(3, len(node_info)):
+						if node_info[j].startswith('%'):
+							# このレジスタを仮のカウンタとして設定
+							candidate_counter = node_info[j]
+
+							# このレジスタが実際にループカウンタとして機能するか確認
+							# （通常、ループカウンタはループ本体で更新される）
+							# まずはload命令からの参照を確認
+							for check_node in header_nodes:
+								check_info = check_node[0].split()
+								if len(check_info) > 3 and 'load' in check_info[1] and check_info[2] == candidate_counter:
+									level_info['counter'] = candidate_counter
+									level_info['equivalent_regs'].add(candidate_counter)
+									level_info['node_info']['icmp'] = {
+										'node_id': i,
+										'instruction': ' '.join(node_info)
+									}
+									#print(f"  Loop counter: {level_info['counter']} (verified from load)")
+									break
+
+							# カウンタが見つかった場合は終了
+							if level_info['counter']:
+								break
+
+							# それでも見つからない場合は、単純にこのレジスタをカウンタとして使用
+							if not level_info['counter']:
+								level_info['counter'] = candidate_counter
+								level_info['equivalent_regs'].add(candidate_counter)
+								level_info['node_info']['icmp'] = {
+									'node_id': i,
+									'instruction': ' '.join(node_info)
+								}
+								#print(f"  Loop counter: {level_info['counter']} (assumed from icmp)")
+								break
+
+			# 2. ソースメモリ変数を特定 (load命令から)
+			if level_info['counter']:
+				for i, node in enumerate(header_nodes):
+					node_info = node[0].split()
+					# カウンタを定義するload命令を探す
+					if (len(node_info) > 2 and node_info[2] == level_info['counter'] and
+						'load' in node_info[1]):
+						#print(f"  Found load for counter: {' '.join(node_info)}")
+
+						# ロード元のポインタを取得
+						if len(node_info) > 3 and node_info[3].startswith('%'):
+							level_info['source'] = node_info[3]
+							level_info['equivalent_regs'].add(node_info[3])
+
+							level_info['node_info']['load'] = {
+								'node_id': i,
+								'instruction': ' '.join(node_info)
+							}
+							#print(f"  Source pointer: {level_info['source']}")
+							break
+
+			# 3. レジスタの同値関係を追跡
+			if level_info['counter'] or level_info['source']:
+				# 同値関係のある全レジスタを追跡
+				for reg in list(level_info['equivalent_regs']):
+					# ループ内の全ブロックでレジスタの使用を追跡
+					for block_id in loop_info.nodes:
+						self._track_register_equivalence(block_id, reg, level_info)
+
+				#print(f"  Equivalent registers: {level_info['equivalent_regs']}")
+
+			# 4. sext命令を探す（ループ内の全ブロックで）
+			if level_info['counter'] or level_info['source']:
+				for block_id in loop_info.nodes:
+					nodes = self._read_node_list(block_id)
+					for i, node in enumerate(nodes):
+						node_info = node[0].split()
+
+						# sext命令をチェック
+						if len(node_info) > 3 and 'sext' in node_info[1]:
+							source_reg = node_info[3]
+							result_reg = node_info[2]
+
+							# このsextがループカウンタまたは同値レジスタから派生しているか
+							if source_reg in level_info['equivalent_regs']:
+								level_info['sext_outputs'].add(result_reg)
+								#print(f"  Found sext: {result_reg} = sext {source_reg}")
+
+								if 'sext_instructions' not in level_info['node_info']:
+									level_info['node_info']['sext_instructions'] = []
+
+								level_info['node_info']['sext_instructions'].append({
+									'block_id': block_id,
+									'node_id': i,
+									'instruction': ' '.join(node_info),
+									'source': source_reg,
+									'result': result_reg
+								})
+
+			# 5. GEP命令での使用を探す
+			#print(f"  Calling _track_gep_usage for level {level}")
+			self._track_gep_usage(level, level_info)
+
+			# 結果をループインデックス情報に追加
+			if level_info['counter'] or level_info['source']:
+				loop_indices[level] = level_info
+
+		# インデックスレジスタとループレベルのマッピングを構築
+		index_reg_to_loop_level = {}
+		for level, info in loop_indices.items():
+			# カウンタとソースをマッピング
+			if info['counter']:
+				index_reg_to_loop_level[info['counter']] = level
+			if info['source']:
+				index_reg_to_loop_level[info['source']] = level
+
+			# 同値レジスタをマッピング
+			for reg in info['equivalent_regs']:
+				index_reg_to_loop_level[reg] = level
+
+			# sext出力をマッピング
+			for reg in info['sext_outputs']:
+				index_reg_to_loop_level[reg] = level
+
+		# デバッグ出力
+		#print("\nDEBUG: Index register to loop level mapping:")
+		#for reg, level in index_reg_to_loop_level.items():
+		#	print(f"  {reg} -> Level {level}")
+
+		# マッピング情報を保存
+		self.index_reg_to_loop_level = index_reg_to_loop_level
+
+		return loop_indices
+
+	def _track_gep_usage(self, level: str, level_info: Dict) -> None:
+		"""
+		GEP命令の探索を避け、ポインタレジスタ情報に基づいてループレベルと次元の関連付けを行う
+		"""
+		#print(f"\nDEBUG: Using pointer register info instead of GEP tracking for loop level {level}")
+
+		# このループレベルに属するブロックを取得
+		loop_blocks = []
+		if level in self.loop_levels:
+			loop_blocks = self.loop_levels[level].nodes
+
+		#print(f"  Loop blocks: {loop_blocks}")
+
+		# 配列次元マッピング情報
+		array_dim_mapping = {}  # {array_name: {dimension: level}}
+
+		# ポインタレジスタ情報から配列とインデックスレジスタの関係を取得
+		for block_id in loop_blocks:
+			if block_id not in self.pointer_regs_info:
+				continue
+
+			for reg_info in self.pointer_regs_info[block_id]:
+				array_name = reg_info.get('array_name')
+				if not array_name or array_name == 'None':
+					continue
+
+				# インデックスレジスタのリストを取得
+				index_regs_list = reg_info.get('index_regs', {}).get('regs', [])
+				if not index_regs_list:
+					continue
+
+				#print(f"  Found register info for array {array_name} in block {block_id}")
+				#print(f"  Index registers: {index_regs_list}")
+
+				# 各インデックスレジスタがこのループレベルに関連しているか確認
+				for i, reg in enumerate(index_regs_list):
+					# インデックスレジスタがこのループレベルに属しているか
+					is_level_reg = False
+					if hasattr(self, 'index_reg_to_loop_level'):
+						reg_level = self.index_reg_to_loop_level.get(reg)
+						if reg_level == level:
+							is_level_reg = True
+
+					if is_level_reg:
+						# 次元は0から順に割り当て
+						dim_idx = i
+						#print(f"  Register {reg} used for dimension {dim_idx} of array {array_name} in level {level}")
+
+						# 配列次元のマッピングを更新
+						if array_name not in array_dim_mapping:
+							array_dim_mapping[array_name] = {}
+						array_dim_mapping[array_name][dim_idx] = level
+
+		# 結果の保存
+		if array_dim_mapping:
+			level_info['array_dimensions'] = array_dim_mapping
+			#print(f"  Array dimensions mapped to this level: {array_dim_mapping}")
+
+			# グローバルなマッピング情報を更新
+			if not hasattr(self, 'array_dim_to_loop'):
+				self.array_dim_to_loop = {}
+
+			for array_name, dims in array_dim_mapping.items():
+				if array_name not in self.array_dim_to_loop:
+					self.array_dim_to_loop[array_name] = {}
+
+				# 次元マッピングを更新
+				for dim, mapped_level in dims.items():
+					self.array_dim_to_loop[array_name][dim] = mapped_level
+
+	def _estimate_dimension_from_position(self, node_info: List[str], position: int) -> int:
+		"""
+		GEP命令内の位置から次元を推定する一般的な方法
+		より正確な次元の推定を実現
+		"""
+		try:
+			# GEP命令の構造を解析
+			if 'getelementptr' in node_info[1]:
+				# LLVM GEP命令の基本構造:
+				# getelementptr [...], [...] @array, i64 0, i64 dim0_idx, i64 dim1_idx, ...
+
+				# 位置がどの次元に対応するかを特定
+				array_pos = -1
+				array_name = ""
+
+				# まず配列名の位置を特定
+				for i, token in enumerate(node_info):
+					if token.startswith('@'):
+						array_pos = i
+						array_name = token[1:].split('_')[0]
+						break
+
+				# 配列名が見つからない場合は別の方法で検出
+				if array_pos == -1:
+					for i, token in enumerate(node_info):
+						if 'getelementptr' in token and '@' in token:
+							array_match = re.search(r'@([a-zA-Z0-9_]+)', token)
+							if array_match:
+								array_name = array_match.group(1).split('_')[0]
+								array_pos = i
+								break
+
+				# 配列名が見つかった場合、次元インデックスの位置を特定
+				if array_pos != -1:
+					# 最初の次元インデックスは通常、配列名の後の「i64 0」の後に来る
+					base_pos = array_pos + 2  # 配列名 + "i64 0" でベース位置を推定
+
+					# 位置が基底インデックスより後ろにあるかどうかを確認
+					if position > base_pos:
+						# インデックスの位置から次元を計算（0ベース）
+						# 通常、「i64 インデックス」のペアで表現されるため、間隔は2
+						dim_idx = (position - base_pos - 1) // 2
+						return dim_idx
+
+				# 特定の位置パターンが見つからない場合、レジスタの位置に基づいて推定
+				# 一般的に、GEP命令内の最初のレジスタが次元0、次が次元1...
+				reg_count = 0
+				for i in range(1, position):
+					if node_info[i].startswith('%'):
+						reg_count += 1
+
+				return reg_count
+
+			return 0  # デフォルト値として0（最初の次元）を返す
+
+		except Exception as e:
+			print(f"Error estimating dimension: {e}")
+			return 0
+
+	def _improve_array_mapping(self):
+		"""
+		ポインタレジスタ情報とインデックスレジスタのループレベルマッピングを使用して
+		配列のアクセスパターンを特定する
+		"""
+		try:
+			#print("\nDEBUG: Improved array dimension mapping using pointer register info")
+
+			# インデックスレジスタとループレベルのマッピングを使用
+			index_regs = self.index_reg_to_loop_level
+			#print(f"  Using index register mapping: {index_regs}")
+
+			# 配列マッピングの初期化
+			array_mapping = {}
+
+			# pointer_regs_infoから配列とインデックスレジスタの関係を取得
+			for block_id, regs_list in self.pointer_regs_info.items():
+				for reg_info in regs_list:
+					array_name = reg_info.get('array_name')
+					if not array_name or array_name == 'None':
+						continue
+
+					# インデックスレジスタのリストを取得
+					index_regs_list = reg_info.get('index_regs', {}).get('regs', [])
+					#print(f"  Array {array_name} in block {block_id} uses index registers: {index_regs_list}")
+
+					if not index_regs_list:
+						continue
+
+					# 配列がマッピングにない場合は初期化
+					if array_name not in array_mapping:
+						array_mapping[array_name] = {}
+
+					# 各インデックスレジスタについて、対応するループレベルを確認
+					for i, reg in enumerate(index_regs_list):
+						if reg in index_regs:
+							level = index_regs[reg]
+							# 次元は0から順に割り当て
+							dim_idx = i
+
+							#print(f"  Found: Array {array_name}, dimension {dim_idx} uses register {reg} (level {level})")
+
+							# マッピング情報を更新
+							if dim_idx not in array_mapping[array_name]:
+								array_mapping[array_name][dim_idx] = set()
+							array_mapping[array_name][dim_idx].add(level)
+
+			# 結果の整理と出力
+			final_mapping = {}
+			for array_name, dims in array_mapping.items():
+				final_mapping[array_name] = {}
+				for dim, levels in dims.items():
+					# 各次元のレベルを選択（複数ある場合は最初のものを使用）
+					levels_list = list(levels)
+					if levels_list:
+						final_mapping[array_name][dim] = levels_list[0]
+
+			# 結果を出力
+			#print("\nFinal array dimension to loop level mapping:")
+			#for array_name, dims in final_mapping.items():
+			#	print(f"  Array {array_name}:")
+			#	for dim, level in dims.items():
+			#		print(f"    Dimension {dim} is primarily accessed in loop level: {level}")
+
+			# ループレベル情報にも反映
+			for array_name, dims in final_mapping.items():
+				for dim, level in dims.items():
+					if level in self.loop_levels and array_name not in self.loop_levels[level].array_dims:
+						self.loop_levels[level].array_dims[array_name] = {
+							'dimensions': self.array_dims.get(array_name, []),
+							'accessed_dims': [int(dim)],
+							'dim_to_loop': {str(dim): level}
+						}
+					elif level in self.loop_levels:
+						if 'accessed_dims' not in self.loop_levels[level].array_dims.get(array_name, {}):
+							self.loop_levels[level].array_dims[array_name]['accessed_dims'] = []
+						if int(dim) not in self.loop_levels[level].array_dims[array_name]['accessed_dims']:
+							self.loop_levels[level].array_dims[array_name]['accessed_dims'].append(int(dim))
+						if 'dim_to_loop' not in self.loop_levels[level].array_dims.get(array_name, {}):
+							self.loop_levels[level].array_dims[array_name]['dim_to_loop'] = {}
+						self.loop_levels[level].array_dims[array_name]['dim_to_loop'][str(dim)] = level
+
+			return final_mapping
+
+		except Exception as e:
+			print(f"Error in _improve_array_mapping: {e}")
+			import traceback
+			traceback.print_exc()
+			return {}
+
+	def _analyze_index_update_pattern_for_level(self, level: str, loop_info: LoopInfo) -> List[RegisterFlow]:
+		"""特定のループレベルのインデックス更新パターンを解析"""
+		update_patterns = []
+		exit_block = loop_info.exit
+
+		# 既存のインデックスレジスタを特定
+		level_idx_regs = [reg for reg, lvl in self.index_reg_to_loop_level.items() if lvl == level]
+
+		# 出口ブロックでのインデックス更新命令を検出
+		nodes = self._read_node_list(exit_block)
+		for node in nodes:
+			node_info = node[0].split()
+			if len(node_info) < 3:
+				continue
+
+			opcode = node_info[1].split('_')[0]
+			# 演算命令を特定（add, mul, sub, etc）
+			if opcode in ['add', 'mul', 'sub', 'shl', 'or', 'and', 'xor']:
+				# このレベルのインデックスレジスタに関連する命令か確認
+				is_index_update = False
+				for idx_reg in level_idx_regs:
+					if any(idx_reg in op for op in node_info[2:]):
+						is_index_update = True
+						break
+
+				if is_index_update:
+					# RegisterFlowオブジェクトを作成
+					update_flow = RegisterFlow(
+						reg=node_info[2],
+						opcode=opcode,
+						operands=[op for op in node_info[3:] if self._is_valid_operand(op)],
+						output=node_info[2],
+						extra_info={'block_id': exit_block, 'instruction': ' '.join(node_info)}
+					)
+					update_patterns.append(update_flow)
+
+		return update_patterns
+
+	def _analyze_loop_levels(self) -> Dict[str, LoopInfo]:
+		result = {}
+		try:
+			#print("\nDEBUG: Starting _analyze_loop_levels")
+			if not self.loops:
+				#print("No loops found in the program")
+				return result
+
+			# ループ構造の詳細を出力
+			#print("\nDEBUG: Loop Structure Details")
+			#for idx, loop_nodes in enumerate(self.loops):
+			#	# 最外ループがレベル1、最内ループがレベル3という定義に統一
+			#	level = str(len(self.loops) - idx)
+			#	print(f"Loop {level}: {loop_nodes}")
+			#	if len(loop_nodes) >= 2:
+			#		print(f"  Header: {loop_nodes[0]}, Exit: {loop_nodes[-1]}")
+			#		if len(loop_nodes) > 2:
+			#			print(f"  Body nodes: {loop_nodes[1:-1]}")
+
+			# array_dimsの情報を取得
+			array_dims = self._get_array_dimensions()
+			#print(f"Debug: array_dims = {array_dims}")
+
+			# 各ループレベルのLoopInfoオブジェクトを初期化
+			for idx, loop_nodes in enumerate(self.loops):
+				level = str(len(self.loops) - idx)  # 最外ループがレベル1、最内ループがレベル3
+				#print(f"\nDebug: Processing loop level {level} - {loop_nodes}")
+
+				# 親子関係の設定
+				parent_level = str(int(level) - 1) if int(level) > 1 else ""
+				children_levels = [str(int(level) + 1)] if int(level) < len(self.loops) else []
+
+				# LoopInfoオブジェクトを作成
+				loop_info = LoopInfo(
+					nodes=loop_nodes,
+					header=loop_nodes[0],
+					exit=loop_nodes[-1],
+					parent=parent_level,
+					children=children_levels,
+					array_dims={}
+				)
+				result[level] = loop_info
+
+			# 作成したループレベル情報をインスタンス変数に代入
+			self.loop_levels = result
+
+			# ループインデックス変数を特定
+			#print("\nDEBUG: === IDENTIFYING LOOP INDEX VARIABLES ===")
+			self._identify_loop_indices_with_details()
+
+			# 各ループレベルのインデックス更新パターンを解析
+			for level, loop_info in self.loop_levels.items():
+				update_patterns = self._analyze_index_update_pattern_for_level(level, loop_info)
+				loop_info.index_updates = update_patterns
+				#print(f"  Loop level {level} has {len(update_patterns)} index update patterns")
+
+
+			# インデックスレジスタとループレベルのマッピングを表示
+			#print("\nDEBUG: Index register to loop level mapping:")
+			#for reg, level in self.index_reg_to_loop_level.items():
+			#	print(f"  {reg} -> Level {level}")
+
+			# 配列の次元とループレベルのマッピングを改善
+			#print("\nDEBUG: === IMPROVING ARRAY DIMENSION TO LOOP LEVEL MAPPING ===")
+			self.array_dim_to_loop = self._improve_array_mapping()
+
+			return result
+
+		except Exception as e:
+			print(f"Error analyzing loop levels: {e}")
+			import traceback
+			traceback.print_exc()
+			return result
+
+	def _analyze_array_access(self, block_id: str, node_info: List[str]) -> Dict[str, Any]:
+		# Track registers for each array
+		array_accesses = {}
+		register_to_array = {}  # Map register -> array_name
+
+		try:
+			# 1. First find direct array access (base GEPs)
+			for node in node_info:
+				node_parts = node[0].split()
+				if len(node_parts) < 4:
+					continue
+
+				instruction = node_parts[1]
+				if 'getelementptr' in instruction and '@' in instruction:
+					# Direct array GEP
+					array_name = instruction.split('@')[1].split('_')[0]
+					result_reg = node_parts[2]
+					#print(f"DEBUG: Direct array {array_name} GEP -> {result_reg}")
+
+					if array_name not in array_accesses:
+						array_accesses[array_name] = {
+							'registers': {
+								'gep': [],
+								'load': [],
+								'store': []
+							}
+						}
+					array_accesses[array_name]['registers']['gep'].append(result_reg)
+					register_to_array[result_reg] = array_name
+
+			# 2. Track GEP chains
+			for node in node_info:
+				node_parts = node[0].split()
+				if len(node_parts) < 4:
+					continue
+
+				instruction = node_parts[1]
+				if 'getelementptr' in instruction:
+					result_reg = node_parts[2]
+					source_reg = node_parts[-1]
+					if source_reg in register_to_array:
+						array_name = register_to_array[source_reg]
+						array_accesses[array_name]['registers']['gep'].append(result_reg)
+						register_to_array[result_reg] = array_name
+						#print(f"DEBUG: GEP chain {array_name}: {source_reg} -> {result_reg}")
+
+			# 3. Track load/store using GEP results
+			for node in node_info:
+				node_parts = node[0].split()
+				if len(node_parts) < 4:
+					continue
+
+				instruction = node_parts[1].split('_')[0]
+				if instruction == 'load':
+					pointer = node_parts[3]  # Address to load from
+					result = node_parts[2]   # Register receiving value
+					if pointer in register_to_array:
+						array_name = register_to_array[pointer]
+						array_accesses[array_name]['registers']['load'].append(result)
+						#print(f"DEBUG: Load from {array_name} using {pointer} -> {result}")
+
+				elif instruction == 'store':
+					pointer = node_parts[3]  # Address to store to
+					if len(node_parts) > 4:
+						value = node_parts[4]    # Value being stored
+						if pointer in register_to_array:
+							array_name = register_to_array[pointer]
+							array_accesses[array_name]['registers']['store'].append(value)
+							#print(f"DEBUG: Store to {array_name} using {pointer} <- {value}")
+
+			return array_accesses
+
+		except Exception as e:
+			print(f"Error analyzing array access in block {block_id}: {e}")
+			return {}
 
 	def _analyze_register_dependency(self, reg: str, nodes: List[List[str]],
 								am: List[List[int]], am_size: int) -> Optional[Dict]:
@@ -2868,418 +2726,6 @@ class Analyzer:
 		except Exception:
 			return None
 
-	def _get_dependency_type(self, opcode: str) -> str:
-		"""オペコードから依存関係の種類を判定"""
-		if 'load' in opcode:
-			return 'load'
-		elif 'phi' in opcode:
-			return 'phi'
-		return 'calc'
-
-	def _analyze_store_load_dependency(self,
-			block_id: str,
-			pointer_regs_info: List[Dict],
-			loops: List[List[str]]) -> Dict:
-		result = {
-			'forward_deps': {},
-			'block_order': {}
-		}
-
-		try:
-			print(f"  Analyzing Store-Load Dependency")
-			# 1. block_idが属するループを特定
-			target_loop = None
-			target_loop_id = None
-			for loop_id, loop_nodes in enumerate(loops):
-				if block_id in loop_nodes:
-					target_loop = loop_nodes
-					target_loop_id = str(loop_id)
-					break
-
-			if target_loop is None:
-				print(f"Warning: Block {block_id} not found in any loop")
-				return result
-
-			# 2. ブロック順序の登録
-			result['block_order'][target_loop_id] = {
-				'sequence': target_loop,
-				'start': target_loop[0],
-				'end': target_loop[-1]
-			}
-
-			# 3. ブロックの依存関係の初期化
-			result['forward_deps'][block_id] = {
-				'incoming_loads': {},
-				'outgoing_stores': {}
-			}
-
-			# 4. レジスタ情報の処理
-			# 各ポインタレジスタ情報について処理
-			for info in pointer_regs_info:
-				if 'index_regs' in info and 'regs' in info['index_regs']:
-					reg_list = info['index_regs']['regs']
-				else:
-					continue
-
-				# ノード情報を取得
-				nodes = self._read_node_list(block_id)
-				if not nodes:
-					continue
-
-				# load/store命令の収集
-				stores, loads = self._collect_memory_ops(nodes, reg_list)
-
-				# ロード命令の処理を追加
-				for line_num, load_op in loads.items():
-					array_name = self._get_array_from_reg(load_op.reg_addr)
-					if array_name:
-						if line_num not in result['forward_deps'][block_id]['incoming_loads']:
-							result['forward_deps'][block_id]['incoming_loads'][line_num] = {
-								'reg': load_op.reg_addr,
-								'array': array_name
-							}
-
-				# 依存関係の分析
-				deps = self._analyze_block_forward_deps(
-					block_id,
-					reg_list,
-					target_loop
-				)
-
-				if deps:
-					# 既存の依存関係と統合
-					for store_line, store_info in deps.get('outgoing_stores', {}).items():
-						if store_line not in result['forward_deps'][block_id]['outgoing_stores']:
-							result['forward_deps'][block_id]['outgoing_stores'][store_line] = store_info
-						else:
-							existing_info = result['forward_deps'][block_id]['outgoing_stores'][store_line]
-							for block, loads in store_info.get('next_blocks', {}).items():
-								if block not in existing_info['next_blocks']:
-									existing_info['next_blocks'][block] = loads
-								else:
-									existing_info['next_blocks'][block]['loads'].extend(loads.get('loads', []))
-
-							result['forward_deps'][block_id]['outgoing_stores'][store_line] = existing_info
-
-			return result
-
-		except Exception as e:
-			print(f"Error in _analyze_store_load_dependency: {e}")
-			return result
-
-	def _analyze_block_forward_deps(self,
-			block_id: str,
-			reg_list: List[str],
-			loop_nodes: List[str]) -> Dict:
-		"""
-		ブロックの順方向依存関係を分析
-		Args:
-			block_id: 基本ブロックID
-			reg_list: レジスタ名のリスト
-			loop_nodes: ループノード群
-		Returns:
-			{
-				'outgoing_stores': {
-					line_num: {
-						'reg': str,
-						'next_blocks': {
-							block_id: {
-								'loads': [
-									{
-										'line_num': int,
-										'is_loop_edge': bool,
-										'edge_type': str
-									}
-								]
-							}
-						}
-					}
-				}
-			}
-		"""
-		result = {'outgoing_stores': {}}
-
-		try:
-			print(f"    Analyzing Block Forward Dependencies")
-			# 1. ノード情報の取得
-			node_info = self._read_node_list(block_id)
-			if not node_info:
-				return result
-
-			# 2. store/load命令の収集
-			stores, loads = self._collect_memory_ops(node_info, reg_list)
-
-			# 3. 現在のブロックの位置を特定
-			try:
-				current_idx = loop_nodes.index(block_id)
-			except ValueError:
-				print(f"    Warning: Block {block_id} not found in loop nodes")
-				return result
-
-			next_blocks = loop_nodes[current_idx+1:] if current_idx < len(loop_nodes)-1 else []
-
-			# 4. store命令の処理
-			for store_line, store_info in stores.items():
-				result['outgoing_stores'][store_line] = {
-					'reg': store_info.reg_addr,
-					'next_blocks': {}
-				}
-
-				# 5. 順方向の依存関係を分析
-				for next_block in next_blocks:
-					deps = self._find_forward_loads(
-						next_block,
-						store_info.reg_addr,
-						store_line,
-						block_id,
-						loop_nodes
-					)
-					if deps and deps['loads']:
-						result['outgoing_stores'][store_line]['next_blocks'][next_block] = deps
-
-				# 6. ループエッジの処理
-				if block_id == loop_nodes[-1]:  # 終端から始端へ
-					end_deps = self._find_forward_loads(
-						loop_nodes[0],
-						store_info.reg_addr,
-						store_line,
-						block_id,
-						loop_nodes
-					)
-					if end_deps and end_deps['loads']:
-						result['outgoing_stores'][store_line]['next_blocks'][loop_nodes[0]] = end_deps
-
-			return result
-
-		except Exception as e:
-			print(f"Error in _analyze_block_forward_deps: {e}")
-			print(f"Context - Block: {block_id}, Reg list: {reg_list}")
-			return result
-
-	def _find_dependent_loads(self,
-			target_node: str,
-			store_reg: str,
-			store_line: int,
-			source_node: str,
-			loop_id: str,
-			start_node: str,
-			end_node: str,
-			is_loop_back: bool = False,
-			is_loop_forward: bool = False) -> List[Dict]:
-		"""
-		対象ノードから依存するload命令を検索
-		Args:
-			target_node: 検索対象ノード
-			store_reg: store命令のレジスタ
-			store_line: store命令の行番号
-			source_node: 元のノード
-			loop_id: ループID
-			start_node: ループ始端ノード
-			end_node: ループ終端ノード
-			is_loop_back: ループバックエッジか
-			is_loop_forward: ループ前方エッジか
-		Returns:
-			[
-				{
-					'block_id': str,       # ブロックID
-					'line_num': int,       # load命令の行番号
-					'loop_info': {
-						'loop_id': str,         # ループID
-						'is_loop_edge': bool,   # ループエッジか
-						'edge_type': str,       # エッジタイプ
-						'from_pos': str,        # 依存元の位置
-						'to_pos': str          # 依存先の位置
-					}
-				}
-			]
-		"""
-		dependent_loads = []
-
-		try:
-			# 1. ターゲットノードのノード情報を取得
-			nodes = self._read_node_list(target_node)
-			if not nodes:
-				return dependent_loads
-
-			# 2. ノード位置情報の設定
-			from_pos = self._determine_node_position(source_node, start_node, end_node)
-			to_pos = self._determine_node_position(target_node, start_node, end_node)
-			edge_type = self._determine_edge_type(is_loop_back, is_loop_forward)
-
-			# 3. load命令の探索と依存関係の解析
-			for line_num, node in enumerate(nodes):
-				node = node[0].split()
-				if len(node) < 2:
-					continue
-
-				# load命令かつ対象レジスタを使用している場合
-				if 'load' in node[1] and store_reg in node[3]:
-					load_info = {
-						'block_id': target_node,
-						'line_num': line_num,
-						'loop_info': {
-							'loop_id': loop_id,
-							'is_loop_edge': is_loop_back or is_loop_forward,
-							'edge_type': edge_type,
-							'from_pos': from_pos,
-							'to_pos': to_pos
-						}
-					}
-					dependent_loads.append(load_info)
-
-			return dependent_loads
-
-		except Exception as e:
-			print(f"Error finding dependent loads in node {target_node}: {e}")
-			print(f"Context - Store register: {store_reg}, Source node: {source_node}")
-			return dependent_loads
-
-	def _determine_node_position(self, node: str, start_node: str, end_node: str) -> str:
-		"""ノードの位置を判定"""
-		if node == start_node:
-			return 'start'
-		elif node == end_node:
-			return 'end'
-		return 'middle'
-
-	def _determine_edge_type(self, is_loop_back: bool, is_loop_forward: bool) -> str:
-		"""エッジタイプの判定"""
-		if is_loop_back:
-			return 'backward'
-		elif is_loop_forward:
-			return 'forward'
-		return 'normal'
-
-	def _determine_node_position(self, node: str, start_node: str, end_node: str) -> str:
-		"""ノードの位置を判定"""
-		if node == start_node:
-			return 'start'
-		elif node == end_node:
-			return 'end'
-		return 'middle'
-
-	def _determine_edge_type(self, is_loop_back: bool, is_loop_forward: bool) -> str:
-		"""エッジタイプの判定"""
-		if is_loop_back:
-			return 'backward'
-		elif is_loop_forward:
-			return 'forward'
-		return 'normal'
-
-	def _analyze_node_dependencies(self,
-			current_node: str,
-			stores: Dict[int, MemoryOp],
-			loads: Dict[int, MemoryOp],
-			loop_nodes: List[str],
-			start_node: str,
-			end_node: str,
-			loop_id: str) -> Dict:
-		"""
-		ノード間のstore-load依存関係を分析
-		Args:
-			current_node: 現在の処理ノード
-			stores: 現在ノードのstore命令情報 {line_num: MemoryOp}
-			loads: 現在ノードのload命令情報 {line_num: MemoryOp}
-			loop_nodes: ループノードのリスト
-			start_node: ループ始端ノード
-			end_node: ループ終端ノード
-			loop_id: ループID
-		Returns:
-			{
-				'stores': {
-					line_num: {
-						'reg': str,     # レジスタ名
-						'loads': [      # 依存するload命令のリスト
-							{
-								'block_id': str,   # ブロックID
-								'line_num': int,   # 行番号
-								'loop_info': {
-									'loop_id': str,        # ループID
-									'is_loop_edge': bool,  # ループエッジか
-									'edge_type': str,      # エッジタイプ
-									'from_pos': str,       # 開始位置
-									'to_pos': str         # 終了位置
-								}
-							}
-						]
-					}
-				}
-			}
-		"""
-		result = {'stores': {}}
-
-		try:
-			# 入力検証
-			if not stores:
-				return result
-
-			# 現在のノードの位置を特定
-			try:
-				current_idx = loop_nodes.index(current_node)
-			except ValueError:
-				print(f"Warning: Node {current_node} not found in loop nodes")
-				return result
-
-			# 各store命令の依存関係を分析
-			for store_line, store_info in stores.items():
-				result['stores'][store_line] = {
-					'reg': store_info.reg_addr,
-					'loads': []
-				}
-
-				# 後続ノードのload命令との依存関係を確認
-				next_nodes = loop_nodes[current_idx + 1:]
-				for next_node in next_nodes:
-					deps = self._find_dependent_loads(
-						next_node,
-						store_info.reg_addr,
-						store_line,
-						current_node,
-						loop_id,
-						start_node,
-						end_node
-					)
-					if deps:
-						result['stores'][store_line]['loads'].extend(deps)
-
-				# ループエッジの依存関係を確認
-				if current_node == end_node:
-					# 終端から始端への依存関係
-					deps = self._find_dependent_loads(
-						start_node,
-						store_info.reg_addr,
-						store_line,
-						current_node,
-						loop_id,
-						start_node,
-						end_node,
-						is_loop_back=True
-					)
-					if deps:
-						result['stores'][store_line]['loads'].extend(deps)
-
-				elif current_node == start_node:
-					# 始端から終端への依存関係
-					deps = self._find_dependent_loads(
-						end_node,
-						store_info.reg_addr,
-						store_line,
-						current_node,
-						loop_id,
-						start_node,
-						end_node,
-						is_loop_forward=True
-					)
-					if deps:
-						result['stores'][store_line]['loads'].extend(deps)
-
-			return result
-
-		except Exception as e:
-			print(f"Error analyzing node dependencies: {e}")
-			print(f"Context - Current node: {current_node}, Loop ID: {loop_id}")
-			return result
-
 	def _analyze_pointer_registers(self, block_id: str) -> List[Dict]:
 		results = []
 		result = {
@@ -3291,7 +2737,7 @@ class Analyzer:
 		}
 
 		try:
-			print(f"  Analyzing Pointer Register")
+			#print(f"  Analyzing Pointer Register")
 			# 1. ノード情報の取得
 			nodes = self._read_node_list(block_id)
 			if not nodes:
@@ -3451,135 +2897,6 @@ class Analyzer:
 				'edges': {'forward': [], 'backward': [], 'loop_carried': False}
 			}
 
-	def _is_loop_carried_register(self, reg: str, block_id: str, loop_info: Dict) -> bool:
-		"""
-		レジスタがループ伝搬依存を持つか判定
-		Args:
-			reg: 検査対象レジスタ
-			block_id: 基本ブロックID
-			loop_info: ループ構造情報
-		Returns:
-			bool: ループ伝搬依存の有無
-		"""
-		try:
-			if not loop_info['edges']['loop_carried']:
-				return False
-
-			nodes = self._read_node_list(block_id)
-			if not nodes:
-				return False
-
-			# レジスタの定義位置を確認
-			for line_num, node in enumerate(nodes):
-				node - node[0].split()
-				if len(node) > 2 and reg in node[1]:
-					# レジスタがループヘッダで定義され、ループ内で使用される場合
-					if (loop_info['loop_info']['current']['is_header'] and
-						any(self._is_reg_used_in_block(reg, loop_node)
-							for loop_node in loop_info['loop_info']['nodes'])):
-						return True
-
-			return False
-
-		except Exception as e:
-			print(f"Error checking loop carried register {reg}: {e}")
-			return False
-
-	def _is_reg_used_in_block(self, reg: str, block_id: str) -> bool:
-		"""
-		指定したブロック内でレジスタが使用されているか確認
-		"""
-		try:
-			nodes = self._read_node_list(block_id)
-			return any(reg in node[0].split() for node in nodes if len(node) > 1)
-		except Exception:
-			return False
-
-	def _analyze_gep_from_dependencies(self,
-			block_id: str,
-			dep: Dict,
-			loop_info: Dict) -> Optional[Dict]:
-		"""
-		依存関係からGEP情報を分析
-		Args:
-			block_id: 基本ブロックID
-			dep: 依存関係情報
-			loop_info: ループ構造情報 {
-				'level': int,          # ループのネストレベル
-				'loop_id': str,        # 所属するループのID
-				'position': {          # ブロックの位置情報
-					'is_header': bool,
-					'is_exit': bool,
-					'type': str
-				}
-			}
-		Returns:
-			{
-				'gep_node_id': List[str],  # GEPノードID
-				'array_name': str,         # 配列名
-				'term_gep_id': str,        # 終端GEPノードID
-				'index_regs': {            # レジスタ情報
-					'regs': List[str],
-					'array_dim': int
-				}
-			}
-		"""
-		try:
-			# 1. ノード情報の取得
-			nodes = self._read_node_list(block_id)
-			if not nodes:
-				return None
-
-			# 2. 依存関係からGEPノードを特定
-			gep_nodes = []
-			array_name = ""
-			for store_info in dep.get('stores', {}).values():
-				reg = store_info.get('reg', '')
-				if not reg:
-					continue
-
-				# レジスタを使用するGEPノードを検索
-				for line_num, node in enumerate(nodes):
-					node = node[0].split()
-					if len(node) > 1 and 'getelementptr' in node[1] and reg in node[1]:
-						gep_nodes.append(str(line_num))
-						# 配列名の抽出（形式: getelementptr_@array_name）
-						if '@' in node[1]:
-							array_name = node[1].split('_')[1][1:]
-						break
-
-			if not gep_nodes:
-				return None
-
-			# 3. インデックスレジスタの収集
-			index_regs: Set[str] = set()
-			for store_info in dep.get('stores', {}).values():
-				# store命令の依存するload命令からレジスタを収集
-				for load_info in store_info.get('loads', []):
-					if 'line_num' in load_info:
-						load_line = load_info['line_num']
-						if load_line < len(nodes):
-							load_node = nodes[load_line]
-							if len(load_node) > 2 and load_node[1].startswith('%'):
-								index_regs.add(load_node[1])
-
-			# 4. 終端GEPの特定
-			term_gep_id = gep_nodes[-1] if gep_nodes else "0"
-
-			return {
-				'gep_node_id': gep_nodes,
-				'array_name': array_name,
-				'term_gep_id': term_gep_id,
-				'index_regs': {
-					'regs': list(index_regs),
-					'array_dim': len(index_regs)
-				}
-			}
-
-		except Exception as e:
-			print(f"Error analyzing GEP from dependencies for block {block_id}: {e}")
-			return None
-
 	def _get_terminal_gep(self,
 			terminal_geps: List[Tuple[int, List[str]]],
 			block_id: str,
@@ -3685,31 +3002,6 @@ class Analyzer:
 			print(f"Context - Terminal GEP line: {term_gep_line}")
 			return []
 
-	def _update_array_operations(self, array_patterns: Dict, store_load_deps: Dict):
-		"""
-		配列の操作情報と依存関係を更新
-		"""
-		try:
-			for block_id, deps in store_load_deps.get('forward_deps', {}).items():
-				# store操作の分析
-				for store_info in deps.get('outgoing_stores', {}).values():
-					writing_array = self._get_array_from_reg(store_info['reg'])
-					if writing_array in array_patterns:
-						array_patterns[writing_array]['array_info']['operations']['has_store'] = True
-
-					# 依存関係の更新
-					for array_name, pattern in array_patterns.items():
-						for load_info in deps.get('incoming_loads', {}).values():
-							reading_array = self._get_array_from_reg(load_info['reg'])
-							if reading_array == array_name:
-								pattern['array_info']['operations']['has_load'] = True
-
-			return array_patterns  # 修正したarray_patternsを返す
-
-		except Exception as e:
-			print(f"Error updating array operations: {e}")
-			return array_patterns
-
 	def _get_array_from_reg(self, reg: str) -> Optional[str]:
 		"""レジスタから対応する配列名を取得"""
 		try:
@@ -3750,128 +3042,633 @@ class Analyzer:
 			print(f"Error in _get_array_from_reg: {e}")
 			return None
 
-	def _analyze_memory_operations(self, node_info: List[str], reg: str) -> Dict[str, bool]:
-		"""ノード情報からメモリ操作を分析"""
-		operations = {
-			'has_load': False,
-			'has_store': False
+	def _get_array_dimensions(self) -> Dict[str, List[int]]:
+		"""配列の次元情報を収集する"""
+		try:
+			#print("\nDEBUG: Collecting array dimensions")
+			# LLVM IRファイルパス
+			llvm_file = os.path.join(self.r_path, f"{self.r_name}.ll")
+			#print(f"  Looking for file: {llvm_file}")
+
+			if not os.path.exists(llvm_file):
+				print(f"  Warning: LLVM IR file not found: {llvm_file}")
+				return {}
+
+			array_dims = {}
+			# 配列定義を読み取る
+			with open(llvm_file, 'r') as f:
+				for line in f:
+					#print(f"  Processing line: {line.strip()}")
+					if '@' in line and ('global' in line or 'alloca' in line):
+						parts = line.split('=')[0].strip()
+						array_name = parts.replace('@', '').strip()
+						dims: List[int] = []
+
+						# [32 x [32 x i32]] のような形式からサイズを抽出
+						parts = line.split('[')
+						for part in parts[1:]:
+							if 'x' in part:
+								size = part.split('x')[0].strip()
+								if size.isdigit():
+									dims.append(int(size))
+
+						if dims:
+							array_dims[array_name] = dims
+							#print(f"    Found array {array_name} with dimensions: {dims}")
+
+			#print(f"  Final array dimensions: {array_dims}")
+			return array_dims
+
+		except Exception as e:
+			print(f"Error in _get_array_dimensions: {e}")
+			import traceback
+			traceback.print_exc()
+			return {}
+
+	def _analyze_control_flow(self) -> Dict:
+		"""General-purpose control flow analysis"""
+		control_flow = {
+			'loops': {},
+			'nesting': {},
+			'block_order': []
 		}
 
 		try:
-			for node in node_info:
-				if isinstance(node, list):
-					node = node[0]
-				regs = node.split()[3:]
-				if reg in str(regs):
-					if 'load' in str(node[1]):
-						operations['has_load'] = True
-					elif 'store' in str(node[1]):
-						operations['has_store'] = True
-		except Exception as e:
-			print(f"Error analyzing memory operations: {e}")
+			# Block connectivity analysis
+			block_connectivity = {}
+			for block_id in self.all_nodes:
+				try:
+					am_file = f"noundef_bblock_{block_id}"
+					am_size, am = AMUtils.Preprocess(self.r_path, am_file)
 
-		return operations
+					# Initialize block connectivity
+					block_connectivity[block_id] = {
+						'successors': [],
+						'predecessors': []
+					}
 
-	def _update_dependencies(self, array_patterns: Dict, deps: Dict):
-		"""配列間の依存関係を更新"""
-		try:
-			for store_info in deps.get('outgoing_stores', {}).values():
-				writing_array = self._get_array_from_reg(store_info['reg'])
-				if writing_array not in array_patterns:
+					# Ensure block_id is valid for matrix size
+					curr_block = int(block_id)
+					if curr_block < am_size:
+						# Collect successors and predecessors
+						for i in range(am_size):
+							if am[curr_block][i]:
+								block_connectivity[block_id]['successors'].append(str(i))
+							if am[i][curr_block]:
+								block_connectivity[block_id]['predecessors'].append(str(i))
+				except Exception as e:
+					print(f"Warning: Failed to process block {block_id}: {e}")
 					continue
 
-				for load_info in store_info.get('loads', []):
-					reading_array = self._get_array_from_reg(load_info['reg'])
-					if reading_array not in array_patterns:
-						continue
+			# Process loop levels
+			for level, loop_info in self.loop_levels.items():
+				nodes = loop_info.nodes
+				header = loop_info.header
+				exit = loop_info.exit
 
-					# 依存関係の更新
-					if reading_array not in array_patterns[writing_array]['dependencies']['read_from']:
-						array_patterns[writing_array]['dependencies']['read_from'].append(reading_array)
-					if writing_array not in array_patterns[reading_array]['dependencies']['write_to']:
-						array_patterns[reading_array]['dependencies']['write_to'].append(writing_array)
+				# Get branch info for blocks in this loop
+				branches = {}
+				for block_id in nodes:
+					if block_id in block_connectivity:
+						successors = block_connectivity[block_id]['successors']
+						if successors:
+							branches[block_id] = {
+								'targets': successors,
+								'type': self._get_branch_type(block_id, successors, header, exit)
+							}
 
-			return array_patterns
+				# Add loop level info
+				control_flow['loops'][level] = {
+					'header': header,
+					'exit': exit,
+					'body': [n for n in nodes if n not in [header, exit]],
+					'branches': branches
+				}
+
+				# Add nesting info
+				control_flow['nesting'][level] = {
+					'parent': loop_info.parent,
+					'children': loop_info.children
+				}
+
+			# Get block execution order if connectivity exists
+			if block_connectivity:
+				control_flow['block_order'] = self._get_block_order(block_connectivity)
+
+			return control_flow
 
 		except Exception as e:
-			print(f"Error updating dependencies: {e}")
-			return array_patterns
+			print(f"Error analyzing control flow: {e}")
+			return control_flow
 
-	def analyze(self) -> Dict:
-		"""プログラム構造の分析"""
+	def _get_branch_type(self, block_id: str, targets: List[str], header: str, exit: str) -> str:
+		"""General-purpose branch type analysis"""
+		if header in targets:
+			return 'loop_back'
+		elif exit in targets:
+			return 'loop_exit'
+		elif len(targets) > 1:
+			return 'conditional'
+		return 'unconditional'
+
+	def _get_block_order(self, connectivity: Dict) -> List[str]:
+		"""General-purpose block order analysis"""
+		order = []
+		visited = set()
+
+		def visit(block: str):
+			if block not in visited:
+				visited.add(block)
+				for succ in connectivity[block]['successors']:
+					visit(succ)
+				order.append(block)
+
+		entry_blocks = [b for b in connectivity if not connectivity[b]['predecessors']]
+		for block in entry_blocks:
+			visit(block)
+
+		return list(reversed(order))
+
+	def _analyze_branch_flow(self, block_id: str) -> Dict[str, Any]:
+		"""
+		分岐命令(br命令)から遡ってデータフローを分析する
+
+		Args:
+			block_id: 基本ブロックID
+
+		Returns:
+			Dict: {
+				'branch_flows': [
+					{
+						'path_id': str,            # パス識別子
+						'condition_node': str,     # 分岐条件ノードID
+						'condition_reg': str,      # 分岐条件レジスタ
+						'path_nodes': List[str],   # パス上のノードID
+						'flow_info': CompFlowInfo, # フロー情報
+						'leaf_nodes': List[Dict],  # 葉ノード情報
+						'is_taken_branch': bool,   # 条件が真の場合に実行されるパスか
+						'execution_path': str      # 実行パス (true/false)
+					}
+				],
+				'branch_deps': {                   # 分岐の依存関係
+					'reg_deps': List[str],         # レジスタ依存
+					'mem_deps': List[str]          # メモリ依存
+				}
+			}
+		"""
 		result = {
-			'array_patterns': {},
-			'loop_levels': self._analyze_loop_levels(),
-			'loops': self.loops
+			'branch_flows': [],
+			'branch_deps': {
+				'reg_deps': [],
+				'mem_deps': []
+			}
 		}
 
 		try:
-			print(f"Analyzing:")
-			# ループレベルごとの分析
-			for loop_id, loop_info in result['loop_levels'].items():
-				loop_nodes = loop_info.nodes
+			# 1. branch_leafパスファイルの読み込み
+			branch_paths = self._read_path_file(block_id, "branch_leaf")
+			if not branch_paths:
+				#print(f"No branch-to-leaf paths found for block {block_id}")
+				return result
 
-				# 各基本ブロックの分析
-				for block_id in loop_nodes:
-					# 1. ポインタレジスタの分析
-					pointer_regs_info = self._analyze_pointer_registers(block_id)
-					if not pointer_regs_info:
+			# 2. ノードリストの取得
+			nodes = self._read_node_list(block_id)
+			if not nodes:
+				print(f"No nodes found for block {block_id}")
+				return result
+
+			# 3. パスの解析
+			formatted_paths = self._path_formatter(branch_paths)
+			if not formatted_paths:
+				return result
+
+			#print(f"\nDEBUG: Analyzing branch paths for block {block_id}")
+			#print(f"  Found {len(formatted_paths)} path sets")
+
+			# 4. 各パスについて処理
+			for path_idx, path_segments in enumerate(formatted_paths):
+				#print(f"  Processing path set {path_idx+1} with {len(path_segments)} segments")
+
+				# 分岐ノード情報を収集
+				br_node_id = None
+				br_node_info = None
+
+				# 最初に分岐ノードを特定
+				for node_idx, node in enumerate(nodes):
+					node_info = node[0].split()
+					if node_info[1].startswith('br'):
+						br_node_id = node_idx
+						br_node_info = node_info
+						#print(f"  Found branch node: {br_node_id}, {' '.join(br_node_info)}")
+						break
+
+				# 分岐ノードが見つからない場合はスキップ
+				if br_node_id is None:
+					#print("  No branch node found in this block")
+					continue
+
+				# 各セグメントを処理
+				for segment_idx, segment in enumerate(path_segments):
+					if not segment:  # 空のセグメントをスキップ
 						continue
 
-					# 2. 配列アクセスパターンの分析
-					nodes = self._read_node_list(block_id)
-					array_accesses = self._analyze_array_access(block_id, nodes)
+					#print(f"  Processing segment {segment_idx+1}: {segment}")
 
-					# 3. 各配列の情報を整理
-					for pointer_reg in pointer_regs_info:
-						array_name = pointer_reg['array_name']
-						if not array_name or array_name == 'None':
+					# パスのノード情報を収集
+					path_nodes = []
+					leaf_nodes = []
+					condition_node = None
+					condition_reg = None
+
+					# 条件ノード（icmp）と葉ノードを特定
+					for node_id in segment:
+						node_idx = int(node_id)
+						if node_idx >= len(nodes):
 							continue
 
-						# 3.1 配列情報の初期化
-						if array_name not in result['array_patterns']:
-							result['array_patterns'][array_name] = {
-								'array_info': {
-									'dimensions': pointer_reg['index_regs']['array_dim'],
-									'block_id': pointer_reg['block_id'],
-									'index_regs': pointer_reg['index_regs']['regs'],
-									'operations': {
-										'has_load': False,
-										'has_store': False
-									},
-									'loop_access': {}
-								},
-								'dependencies': {
-									'read_from': [],
-									'write_to': []
-								}
-							}
+						node_info = nodes[node_idx][0].split()
+						path_nodes.append(node_id)
 
-						# 3.2 ループアクセス情報の更新
-						if array_name in array_accesses:
-							for dim_access in array_accesses[array_name].dim_accesses:
-								result['array_patterns'][array_name]['array_info']['loop_access'][dim_access.loop_level] = {
-									'dimension': dim_access.dimension,
-									'array_size': dim_access.array_size
-								}
+						# 分岐条件（icmp命令）を特定
+						if 'icmp' in node_info[1]:
+							condition_node = node_id
+							condition_reg = node_info[2]  # icmpの結果レジスタ
+							#print(f"    Found condition node: {condition_node}, register: {condition_reg}")
 
-					# 4. store-load依存関係の分析と配列操作の設定
-					store_load_deps = self._analyze_store_load_dependency(
-						block_id,
-						pointer_regs_info,
-						self.loops
-					)
+						# LEAF ノードの特定
+						if 'LEAF' in node_info:
+							leaf_nodes.append({
+								'node_id': node_id,
+								'reg': node_info[1] if len(node_info) > 1 else None
+							})
+							#print(f"    Found leaf node: {node_id}, register: {node_info[1] if len(node_info) > 1 else None}")
 
-					# 5. 依存関係と操作の設定
-					result['array_patterns'] = self._update_array_operations(result['array_patterns'], store_load_deps)
+					if condition_node or leaf_nodes:  # 条件ノードまたは葉ノードのいずれかがあれば処理
+						# CompFlowInfoの構築
+						flows = self._build_branch_flow_info(segment, nodes, block_id)
 
-			# 6. 計算パス分析の追加（ループの外で実行）
-			compute_paths_info = self.compute_path_analyzer.analyze_compute_paths()
-			result['compute_paths'] = compute_paths_info
+						# 実行パスの判定（より正確な判定のために分岐情報を解析）
+						execution_path = self._determine_execution_path(segment_idx, br_node_info, condition_reg)
 
-			#print(f"result:{result}")
-			return result, IndexExpression
+						# 真の分岐かどうかの判定
+						# segment_idxに基づいて簡易判定（より複雑な判定も可能）
+						is_taken_branch = (segment_idx == 0)
+
+						branch_flow = {
+							'path_id': f'branch_path_{block_id}_{path_idx}_{segment_idx}',
+							'condition_node': condition_node,
+							'condition_reg': condition_reg,
+							'path_nodes': path_nodes,
+							'flow_info': flows,
+							'leaf_nodes': leaf_nodes,
+							'is_taken_branch': is_taken_branch,
+							'execution_path': execution_path
+						}
+
+						result['branch_flows'].append(branch_flow)
+						#print(f"    Added branch flow with path_id: {branch_flow['path_id']}")
+
+						# 依存関係の収集
+						deps = self._collect_branch_dependencies(segment, nodes)
+						result['branch_deps']['reg_deps'].extend(deps['reg_deps'])
+						result['branch_deps']['mem_deps'].extend(deps['mem_deps'])
+					else:
+						print(f"    Skipping invalid path: No condition node or leaf nodes found")
+
+			# 重複を排除
+			result['branch_deps']['reg_deps'] = list(set(result['branch_deps']['reg_deps']))
+			result['branch_deps']['mem_deps'] = list(set(result['branch_deps']['mem_deps']))
+
+			return result
 
 		except Exception as e:
-			print(f"Error in analyze: {e}")
-			return result, IndexExpression
+			print(f"Error analyzing branch flow for block {block_id}: {e}")
+			import traceback
+			traceback.print_exc()
+			return result
+
+	def _build_branch_flow_info(self, path_segment: List[str], nodes: List[List[str]], block_id: str) -> CompFlowInfo:
+		"""
+		パスセグメントからフロー情報を構築
+
+		Args:
+			path_segment: パスセグメント（ノードIDのリスト）
+			nodes: ブロックのノードリスト
+			block_id: 基本ブロックID
+
+		Returns:
+			CompFlowInfo: 構築されたフロー情報
+		"""
+		flow_info = CompFlowInfo(reg_flows=[], block_id=block_id)
+
+		try:
+			# 各ノードを処理
+			for node_id in path_segment:
+				node_idx = int(node_id)
+				if node_idx >= len(nodes):
+					continue
+
+				node_info = nodes[node_idx][0].split()
+
+				# icmp、load、br、またはその他の重要な命令を処理
+				if len(node_info) > 2:
+					opcode = node_info[1].split('_')[0]
+					if opcode in ['icmp', 'load', 'add', 'mul', 'sub', 'and', 'or', 'xor', 'br']:
+						# 命令のオペランドを収集
+						operands = []
+						for op in node_info[3:]:
+							if self._is_valid_operand(op):
+								operands.append(op)
+
+						# RegisterFlowオブジェクトを作成
+						reg_flow = RegisterFlow(
+							reg=node_info[2] if node_info[2].startswith('%') else '',
+							opcode=opcode,
+							operands=operands,
+							output=node_info[2] if node_info[2].startswith('%') else '',
+							extra_info={
+								'node_id': node_id,
+								'instruction': ' '.join(node_info)
+							}
+						)
+
+						flow_info.add_flow(reg_flow)
+
+			# ループレベルの設定（利用可能な場合）
+			for level, info in self.loop_levels.items():
+				if block_id in info.nodes:
+					flow_info.loop_level = int(level)
+					break
+
+		except Exception as e:
+			print(f"Error building branch flow info: {e}")
+
+		return flow_info
+
+	def _collect_branch_dependencies(self, path_segment: List[str], nodes: List[List[str]]) -> Dict[str, List[str]]:
+		"""
+		分岐パスの依存関係を収集
+
+		Args:
+			path_segment: パスセグメント（ノードIDのリスト）
+			nodes: ブロックのノードリスト
+
+		Returns:
+			Dict: {
+				'reg_deps': List[str],  # レジスタ依存
+				'mem_deps': List[str]   # メモリ依存
+			}
+		"""
+		result = {
+			'reg_deps': [],
+			'mem_deps': []
+		}
+
+		try:
+			defined_regs = set()  # このパスで定義されるレジスタ
+			used_regs = set()     # このパスで使用されるレジスタ
+
+			# 各ノードを処理
+			for node_id in path_segment:
+				node_idx = int(node_id)
+				if node_idx >= len(nodes):
+					continue
+
+				node_info = nodes[node_idx][0].split()
+
+				# レジスタの使用と定義を追跡
+				if len(node_info) > 2:
+					# 定義されるレジスタ
+					if node_info[2].startswith('%'):
+						defined_regs.add(node_info[2])
+
+					# 使用されるレジスタ
+					for op in node_info[3:]:
+						if op.startswith('%'):
+							used_regs.add(op)
+
+					# メモリ依存の追跡
+					if 'load' in node_info[1] or 'store' in node_info[1]:
+						mem_addr = node_info[3] if len(node_info) > 3 else None
+						if mem_addr and mem_addr.startswith('%'):
+							result['mem_deps'].append(mem_addr)
+
+			# このパスで使用されるが定義されていないレジスタを依存関係として追加
+			result['reg_deps'] = list(used_regs - defined_regs)
+
+		except Exception as e:
+			print(f"Error collecting branch dependencies: {e}")
+
+		return result
+
+	def _determine_execution_path(self, segment_idx: int, br_node_info: List[str], condition_reg: str) -> str:
+		"""
+		分岐の実行パスを判定する
+
+		Args:
+			segment_idx: パスセグメントのインデックス
+			br_node_info: 分岐ノードの情報
+			condition_reg: 条件レジスタ
+
+		Returns:
+			str: 'true' または 'false'
+		"""
+		try:
+			# 最も単純な判定: segment_idxが0なら真、それ以外なら偽
+			if segment_idx == 0:
+				return 'true'
+			else:
+				return 'false'
+
+			# より詳細な実装では、br命令の詳細を解析して判定することも可能
+			# 例えば、br命令のオペランドを解析して、true/falseのラベルを特定するなど
+
+		except Exception as e:
+			print(f"Error determining execution path: {e}")
+			return 'unknown'
+
+	def _is_valid_operand(self, operand: str) -> bool:
+		"""
+		オペランドが有効か（レジスタか即値か）を判定
+
+		Args:
+			operand: チェックするオペランド
+
+		Returns:
+			bool: 有効な場合True
+		"""
+		try:
+			# レジスタ
+			if operand.startswith('%'):
+				return True
+
+			# 即値（整数）
+			if operand.isdigit() or (operand.startswith('-') and operand[1:].isdigit()):
+				return True
+
+			# 16進数
+			if operand.startswith('0x') or operand.startswith('-0x'):
+				try:
+					int(operand, 16)
+					return True
+				except ValueError:
+					return False
+
+			return False
+
+		except Exception as e:
+			print(f"Error checking operand validity: {e}")
+			return False
+
+	def analyze(self) -> Dict:
+		"""Analyze LLVM IR for AGU and Datapath in general-purpose way"""
+		#print("\nDEBUG: Starting analysis")
+
+		# Get array dimensions
+		array_dims = self._get_array_dimensions()
+		#print(f"DEBUG: Array dimensions: {array_dims}")
+
+		# pointer_registersの解析を追加
+		for block_id in self.all_nodes.keys():
+			pointer_regs = self._analyze_pointer_registers(block_id)
+			if pointer_regs:
+				for reg in pointer_regs:
+					# ポインタレジスタ情報を蓄積
+					self.pointer_regs_info[block_id] = pointer_regs
+
+		#print(f"DEBUG: Pointer registers info: {self.pointer_regs_info}")
+
+		# Get loop levels with array dimensions
+		loop_levels = self._analyze_loop_levels()
+
+		# 明示的に配列マッピングを改善
+		#print("\nDEBUG: Explicitly calling _improve_array_mapping")
+		improved_mapping = self._improve_array_mapping()
+		self.array_dim_to_loop = improved_mapping
+
+		# インスタンス変数に設定
+		self.array_dim_to_loop = improved_mapping
+
+		# Initialize return structure
+		analysis_result = {
+			'array_info': {},     # For AGU
+			'compute_info': {},   # For Datapath
+			'loop_levels': loop_levels,
+			'control_flow': self._analyze_control_flow(),
+			'branch_flow': {},     # 分岐フロー解析結果を追加
+			'array_dim_to_loop': improved_mapping  # 明示的に改善されたマッピングを追加
+		}
+
+		# index_reg_to_loop_level マッピングの追加
+		if hasattr(self, 'index_reg_to_loop_level'):
+			analysis_result['index_reg_to_loop_level'] = self.index_reg_to_loop_level
+
+		# 各ブロックの分岐フロー解析を実行
+		for block_id in self.all_nodes.keys():
+			branch_flow = self._analyze_branch_flow(block_id)
+			if branch_flow and branch_flow.get('branch_flows'):
+				analysis_result['branch_flow'][block_id] = branch_flow
+
+		# Collect array access information
+		for loop_id, loop_info in loop_levels.items():
+			loop_nodes = loop_info.nodes
+			for block_id in loop_nodes:
+				nodes = self._read_node_list(block_id)
+				array_accesses = self._analyze_array_access(block_id, nodes)
+
+				# Update array_info
+				for array_name, access_info in array_accesses.items():
+					# 配列名の正規化
+					base_name = array_name.split('_')[0]
+					if base_name not in analysis_result['array_info']:
+						analysis_result['array_info'][base_name] = {
+							'dimensions': array_dims.get(base_name, []),
+							'registers': {'gep': [], 'load': [], 'store': []},
+							'loop_access': {}
+						}
+
+					array_info = analysis_result['array_info'][base_name]
+					# レジスタ情報の更新
+					for reg_type in ['gep', 'load', 'store']:
+						array_info['registers'][reg_type].extend(
+							access_info['registers'][reg_type]
+						)
+					# ループレベルでのアクセス情報の更新
+					if loop_id not in array_info['loop_access']:
+						array_info['loop_access'][loop_id] = {
+							'gep_regs': access_info['registers']['gep'],
+							'load_regs': access_info['registers']['load'],
+							'store_regs': access_info['registers']['store']
+						}
+
+		# Collect compute information
+		compute_paths = self.compute_path_analyzer.analyze_compute_paths()
+		analysis_result['compute_info'] = {
+			'operations': [],
+			'registers': {
+				'dependencies': {},
+				'flow': {}
+			},
+			'memory_ops': {
+				'loads': [],
+				'stores': []
+			},
+			'branch_conditions': []  # 分岐条件情報を追加
+		}
+
+		# 分岐条件情報の追加
+		for block_id, branch_info in analysis_result['branch_flow'].items():
+			for flow in branch_info.get('branch_flows', []):
+				if flow.get('condition_reg'):
+					analysis_result['compute_info']['branch_conditions'].append({
+						'block_id': block_id,
+						'condition_reg': flow['condition_reg'],
+						'path_id': flow['path_id'],
+						'execution_path': flow.get('execution_path', 'unknown')
+					})
+
+		# 変換処理の前に追加
+		print("\nDEBUG: Details of compute paths:")
+		for i, path in enumerate(compute_paths['compute_paths']):
+			print(f"Path {i} (block_id={path.get('computation', {}).get('flow_info', {}).block_id}, type={path.get('type')}):")
+			print(f"  Computation sequence: {path.get('computation', {}).get('sequence', [])}")
+			print(f"  Inputs: {path.get('inputs', {})}")
+			print(f"  Output: {path.get('output', {})}")
+
+		if compute_paths and 'compute_paths' in compute_paths:
+			for path in compute_paths['compute_paths']:
+				# Add computation sequence
+				for comp in path.get('computation', {}).get('sequence', []):
+					analysis_result['compute_info']['operations'].append({
+						'op': comp['opcode'],
+						'output': comp['output_reg'],
+						'inputs': comp['input_regs']
+					})
+
+				# Add register dependencies
+				if 'path_dependencies' in compute_paths:
+					for reg_dep in compute_paths['path_dependencies']:
+						analysis_result['compute_info']['registers']['dependencies'][
+							reg_dep['source_path']] = reg_dep['target_path']
+
+				# Add memory operations
+				if 'inputs' in path:
+					analysis_result['compute_info']['memory_ops']['loads'].extend(
+						path['inputs'].get('loads', [])
+					)
+				if path.get('output', {}).get('type') == 'memory':
+					analysis_result['compute_info']['memory_ops']['stores'].append(
+						path['output']
+					)
+
+		# Analyzer.analyze()メソッド内の最後の部分に追加
+		print("\nDEBUG: Check compute_paths structure:")
+		print(f"compute_paths keys: {compute_paths.keys()}")
+		if 'compute_paths' in compute_paths:
+			print(f"Number of compute paths: {len(compute_paths['compute_paths'])}")
+			for i, path in enumerate(compute_paths['compute_paths']):
+				print(f"Path {i}: block_id={path.get('computation', {}).get('flow_info', {}).block_id}, type={path.get('type')}")
+
+		#print(f"DEBUG: Analysis completed")
+		print(f"analysis_result:{analysis_result}")
+		return analysis_result
