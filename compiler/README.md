@@ -19,7 +19,7 @@ SystemVerilog and testbenches: https://github.com/IAMAl/ElectronNest/tree/main/h
 
 
 <div align="center">
-  <img src="https://github.com/IAMAl/ElectronNest_CP/blob/main/workflow_cgra.png"
+  <img src="https://github.com/IAMAl/ElectronNest/blob/main/compiler/llvm/workflow_cgra.png"
        alt="HTML image alt text"
        title="Workflow for Generating Address Generation Program"
        width="550px"
