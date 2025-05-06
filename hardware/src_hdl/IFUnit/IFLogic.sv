@@ -381,7 +381,7 @@ module IFLogic
 
 	//// Buffer														////
 	//	 Buffer for Data from External World
-	BuffEn #(
+	Buff_IF #(
 		.DEPTH_FIFO(		DEPTH_FIFO					),
 		.THRESHOLD(			6							),
 		.TYPE_FWRD(			FTk_t						)
@@ -422,7 +422,7 @@ module IFLogic
 							( FSM_FrontEnd == IFLOGIC_ST_FRONT_RUN ) |
 							( FSM_BackEnd == IFLOGIC_ST_BACK_RUN );
 	assign Re_BuffSt	= ~( ( FSM_FrontEnd == IFLOGIC_ST_FRONT_RUN ) & ~R_St ) & ( FSM_FrontEnd != IFLOGIC_ST_SEND_ROUTE ) & ~( ( FSM_FrontEnd > IFLOGIC_ST_ID_F ) & ( FSM_FrontEnd < IFLOGIC_ST_SEND_ROUTE ) ) & ~Charge_St;
-	BuffEn #(
+	Buff_IF #(
 		.DEPTH_FIFO(		DEPTH_FIFO					),
 		.THRESHOLD(			6							),
 		.TYPE_FWRD(			FTk_t						)

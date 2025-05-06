@@ -71,6 +71,9 @@ module TokenUnit
 	assign is_fILL			= ( R_FSM == fILL );
 	assign is_wAIT			= ( R_FSM == wAIT );
 	assign is_rEVERT		= ( R_FSM == rEVERT );
+
+	//	 Pulse of nack detection
+	//	 used for corner case
 	assign Pulse_Nack		= ~I_Nack & & R_NackD1 & ~R_NackD2;
 
 	//// Combination Table
@@ -86,7 +89,7 @@ module TokenUnit
 
 
 	//// Stall Signal												////
-	//	Forcing Back-up the Input
+	//	 Forcing Back-up the Input
 	assign Stall			= I_Valid & I_Nack;
 
 
@@ -95,7 +98,7 @@ module TokenUnit
 
 
 	//// Not Send Nack Token										////
-	//	also used for write-enable when nack arrives at fILL state
+	//	 also used for write-enable when nack arrives at fILL state
 	assign NoNack			= ~I_Valid & I_Nack;
 
 
@@ -105,10 +108,14 @@ module TokenUnit
 								( is_wAIT & Pulse_Nack )	|
 								( is_rEVERT & ~R_Nack );
 
+
 	//// Enable to Capture											////
+	//	 Write-enable
 	assign We				= I_Valid | ( is_fILL & NoNack );
 
+	//	 Read-enable
 	assign Re				= is_fILL | is_rEVERT;
+
 
 	//// Flip Capturing Register No.								////
 	assign FlipW			= ( is_eMPTY & Stall ) | ( is_fILL & I_Nack );
@@ -127,6 +134,7 @@ module TokenUnit
 
 
 	//// Pulse Nack-Bar Detection
+	//	 used for coner case
 	always_ff @( posedge clock ) begin
 		if ( reset ) begin
 			Pulse_Nack_Bar	<= 1'b0;
@@ -276,7 +284,6 @@ module TokenUnit
 		endcase
 	end
 
-	//// Count Stores
 	always_ff @( posedge clock ) begin: ff_count_tokenunit
 		if ( reset ) begin
 			Num		<= 2'h0;

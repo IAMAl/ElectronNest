@@ -356,11 +356,11 @@ module LdUnit
 	assign Re_BuffEn		= ~SendID & ~B_Bypass_BTk.n;
 
 	for ( genvar i=0; i<1; ++i) begin
-	BuffEn #(
+	Buff_IF #(
 		.DEPTH_BUFF(		8							),
 		.THRESHOLD(			8							),
 		.TYPE_FWRD(			FTk_t						)
-	) BuffEn
+	) Buff_IF
 	(
 		.clock(				clock						),
 		.reset(				reset						),

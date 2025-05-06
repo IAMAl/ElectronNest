@@ -188,7 +188,7 @@ import	pkg_alu::*;
 		.I_OperandB(	SourceB_Add						),
 		.O_Result(		ResultAdd						),
 		.I_BTk(			BTk_Add			    			),
-		.O_BTk(			WBTk_Add							)
+		.O_BTk(			WBTk_Add						)
 	);
 
 	//	 Logic

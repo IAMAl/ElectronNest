@@ -94,8 +94,8 @@ module WaitUnit
 	logic						is_Wait_A;
 	logic						is_Wait_B;
 	`ifdef EXTEND
-	assign is_Wait_A		= ( R_FSM_A == wAIT_W ) & ( R_FSM_B != cHECK_W ) & ( R_FSM_B != wAIT_W ) /*& Wait_A*/ & ~CancelWait;
-	assign is_Wait_B		= ( R_FSM_B == wAIT_W ) & ( R_FSM_A != cHECK_W ) & ( R_FSM_A != wAIT_W ) /*& Wait_B*/ & ~CancelWait;
+	assign is_Wait_A		= ( R_FSM_A == wAIT_W ) & ( R_FSM_B != cHECK_W ) & ( R_FSM_B != wAIT_W ) & ~CancelWait;
+	assign is_Wait_B		= ( R_FSM_B == wAIT_W ) & ( R_FSM_A != cHECK_W ) & ( R_FSM_A != wAIT_W )  & ~CancelWait;
 	`else
 	assign is_Wait_A		= ( R_FSM_A == wAIT_W ) & ~CancelWait;
 	assign is_Wait_B		= ( R_FSM_B == wAIT_W ) & ~CancelWait;

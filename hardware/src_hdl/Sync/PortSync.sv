@@ -60,6 +60,11 @@ module PortSync
 	logic						Config_Other;			//Flag: Configured by Other
 	logic						Backup_Attrib;			//Backup: Instruction
 
+	logic						is_FSM_Check_Attirb;
+
+	logic						is_no_ready;
+	logic						is_ready;
+
 
 	//// Capture Signal												////
 	logic						R_Valid;
@@ -108,12 +113,18 @@ module PortSync
 	end
 
 
-	//// Check State												////
+	//// Check Status												////
+	assign is_FSM_Check_Attirb	= is_FSM_Check_Attirb;
+
+	assign is_no_ready		= ~is_Ready1 & ~is_Ready2;
+
+	assign is_ready			= is_ready;
+
 	assign ZeroLength		= ( R_Length == '0 );
 
-	assign AttribData		= ( R_FSM == cHK_ATTRIB ) & ~is_Ready1 & ~is_Ready2 & is_AuxData & ~I_Valid_Other1 & ~I_Valid_Other2;
+	assign AttribData		= is_FSM_Check_Attirb & is_no_ready & is_AuxData & ~I_Valid_Other1 & ~I_Valid_Other2;
 
-	assign Wait				= ( R_FSM == wAIT_OPRAND ) & ~is_Ready1 & ~is_Ready2;
+	assign Wait				= ( R_FSM == wAIT_OPRAND ) & is_no_ready;
 
 
 	//// Output														////
@@ -122,19 +133,19 @@ module PortSync
 	assign O_SelPort		= R_Config_by_Port;
 
 	//	 Backup Attribute Word
-	assign Backup_Attrib	= ( R_FSM == cHK_ATTRIB ) & ~is_Ready1 & ~is_Ready2 & is_AuxData & R_Valid & ~R_ConfigDone;
+	assign Backup_Attrib	= is_FSM_Check_Attirb & is_no_ready & is_AuxData & R_Valid & ~R_ConfigDone;
 	assign O_Backup_Attrib	= Backup_Attrib;
 
 	//	 Synch by Nack Token
-	assign O_Nack_My		= Backup_Attrib | ( Wait & ~( ( R_FSM == wAIT_OPRAND ) & is_Ready1 & is_Ready2 & I_Valid_Other1 & I_Valid_Other2 )  );
+	assign O_Nack_My		= Backup_Attrib | ( Wait & ~( ( R_FSM == wAIT_OPRAND ) & is_ready & I_Valid_Other1 & I_Valid_Other2 )  );
 
 	//	 Ready to Input
 	assign O_Ready			= R_Ready;
 
 	//	 Send Header
-	assign O_SendHead		= ( ( R_FSM == hEADER ) | ( ( R_FSM == cHK_ATTRIB ) & ~R_ConfigDone ) ) & ~is_Configured & ~( is_Ready1 | is_Ready2 );
+	assign O_SendHead		= ( ( R_FSM == hEADER ) | ( is_FSM_Check_Attirb & ~R_ConfigDone ) ) & ~is_Configured & ~( is_Ready1 | is_Ready2 );
 
-	assign Config_Other		= is_PConfigData & R_ConfigDone & ~is_Ready1 & ~is_Ready2;
+	assign Config_Other		= is_PConfigData & R_ConfigDone & is_no_ready;
 
 	//	 Bypassing from Input to Output
 
@@ -145,10 +156,10 @@ module PortSync
 			R_Bypass		<= 1'b0;
 		end
 		else begin
-			R_Bypass		<= ( R_FSM == cHK_ATTRIB ) & (
+			R_Bypass		<= is_FSM_Check_Attirb & (
 								is_RouteData |
 								is_RConfigData |
-								is_PConfigData & R_ConfigDone |
+								( is_PConfigData & R_ConfigDone ) |
 								Config_Other
 								) |
 								( R_FSM == rOUTE ) |
@@ -159,9 +170,9 @@ module PortSync
 
 	//	 Input Data into DataPath
 	assign O_InputData		= R_InputData | (
-									( R_FSM == cHK_ATTRIB ) & ( ~is_Ready1 & ~is_Ready2 & R_Valid & ~R_ConfigDone & R_DataWord )
+									( is_FSM_Check_Attirb & is_no_ready & R_Valid & ~R_ConfigDone & R_DataWord )
 								) | (
-									( R_FSM == wAIT_DATA ) & ((  is_Ready1 & is_Ready2 & R_Valid & R_Valid_Other1 & R_Valid_Other2 ) | ( is_Ready1 & is_Ready2 & R_ConfigDone ))
+									( R_FSM == wAIT_DATA ) & is_ready & (( R_Valid & R_Valid_Other1 & R_Valid_Other2 ) | R_ConfigDone )
 								) | (
 									( R_FSM == wAIT_OPRAND ) & ( R_DataWord & R_ConfigDone )
 								);
@@ -185,7 +196,7 @@ module PortSync
 			R_Config_by_Port	<= 1'b0;
 		end
 		else begin
-			R_Config_by_Port	<= (( R_FSM == pCONFIG ) & ~ZeroLength ) | (( R_FSM == cHK_ATTRIB ) & is_PConfigData & ~R_ConfigDone );
+			R_Config_by_Port	<= (( R_FSM == pCONFIG ) & ~ZeroLength ) | (is_FSM_Check_Attirb & is_PConfigData & ~R_ConfigDone );
 		end
 	end
 
@@ -194,7 +205,7 @@ module PortSync
 			R_Ready			<= 1'b0;
 		end
 		else begin
-			R_Ready			<= ( R_FSM > oUT_ATTRIB ) | ( ( R_FSM == cHK_ATTRIB ) & is_AuxData & ( I_Valid | I_Valid_Other1 | I_Valid_Other2 ) );
+			R_Ready			<= ( R_FSM > oUT_ATTRIB ) | ( is_FSM_Check_Attirb & is_AuxData & ( I_Valid | I_Valid_Other1 | I_Valid_Other2 ) );
 		end
 	end
 
@@ -203,7 +214,7 @@ module PortSync
 			R_Configure		<= 1'b0;
 		end
 		else begin
-			R_Configure		<= (( R_FSM == cHK_ATTRIB ) & is_PConfigData & ~R_ConfigDone ) | ( R_FSM == pCONFIG );
+			R_Configure		<= (is_FSM_Check_Attirb & is_PConfigData & ~R_ConfigDone ) | ( R_FSM == pCONFIG );
 		end
 	end
 
@@ -307,7 +318,7 @@ module PortSync
 						R_Length		<= I_Length;
 						R_FSM			<= bYPASS;
 					end
-					else if ( is_AuxData & ~is_Ready1 & ~is_Ready2 ) begin
+					else if ( is_AuxData & is_no_ready ) begin
 						R_InputData		<= 1'b0;
 						R_SetPConfig	<= 1'b0;
 						R_SetDAttrib	<= 1'b0;

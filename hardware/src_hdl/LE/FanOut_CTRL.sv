@@ -103,7 +103,7 @@ module FanOut_FIFO
 		.O_InC(				O_InC						)
 	);
 
-	BuffEn #(
+	Buff_IF #(
 		.DEPTH_BUFF(		8							),
 		.THRESHOLD(			6							),
 		.TYPE_FWRD(			FTk_t						)
@@ -121,7 +121,7 @@ module FanOut_FIFO
 		.O_Full(										)
 	);
 
-	BuffEn #(
+	Buff_IF #(
 		.DEPTH_BUFF(		DEPTH_FIFO					),
 		.THRESHOLD(			DEPTH_FIFO/2				),
 		.TYPE_FWRD(			FTk_t						)

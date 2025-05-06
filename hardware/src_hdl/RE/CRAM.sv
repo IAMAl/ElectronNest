@@ -226,16 +226,16 @@ module CRAM
 			2'h1: begin
 					case ( St_Addr[ 0 ] )
 						1'h1: begin
-							W_St_Data[ 0 ]	= 8'h00;
-							W_St_Data[ 1 ]  = 8'h00;
-							W_St_Data[ 2 ]  = St_Data.d[POS_B2-1:POS_B1];
-							W_St_Data[ 3 ]  = St_Data.d[POS_B3-1:POS_B2];
+							W_St_Data[0]	= 8'h00;
+							W_St_Data[1] 	= 8'h00;
+							W_St_Data[2] 	= St_Data.d[POS_B2-1:POS_B1];
+							W_St_Data[3] 	= St_Data.d[POS_B3-1:POS_B2];
 						end
 						1'h0: begin
-							W_St_Data[ 0 ]  = St_Data.d[POS_B0-1: 0];
-							W_St_Data[ 1 ]  = St_Data.d[POS_B1-1: POS_B0];
-							W_St_Data[ 2 ]	= 8'h00;
-							W_St_Data[ 3 ]  = 8'h00;
+							W_St_Data[0]	= St_Data.d[POS_B0-1: 0];
+							W_St_Data[1]	= St_Data.d[POS_B1-1: POS_B0];
+							W_St_Data[2]	= 8'h00;
+							W_St_Data[3]	= 8'h00;
 						end
 						default: begin
 							W_St_Data	= '0;

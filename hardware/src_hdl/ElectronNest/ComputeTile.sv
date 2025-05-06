@@ -136,180 +136,180 @@ module ComputeTile
 				if ((c%2 == 0) & (r%2 == 0))	begin
 					if (r > 0) begin
 						//PE to RE: South-Port to North-Port
-						assign R_I_FTk[r][c/2][0][k]	= P_O_FTk[r-1][c/2][3][k];
-						assign R_I_BTk[r][c/2][0][k]	= P_O_BTk[r-1][c/2][3][k];
-						assign R_I_InC[r][c/2][0][k]	= P_O_InC[r-1][c/2][3][k];
+						assign R_I_FTk[ r ][ c/2 ][0][ k ]	= P_O_FTk[r-1][ c/2 ][3][ k ];
+						assign R_I_BTk[ r ][ c/2 ][0][ k ]	= P_O_BTk[r-1][ c/2 ][3][ k ];
+						assign R_I_InC[ r ][ c/2 ][0][ k ]	= P_O_InC[r-1][ c/2 ][3][ k ];
 
 						//RE to PE: North-Port to South-Port
-						assign P_I_FTk[r-1][c/2][3][k]	= R_O_FTk[r][c/2][0][k];
-						assign P_I_BTk[r-1][c/2][3][k]	= R_O_BTk[r][c/2][0][k];
-						assign P_I_InC[r-1][c/2][3][k]	= R_O_InC[r][c/2][0][k];
+						assign P_I_FTk[r-1][ c/2 ][3][ k ]	= R_O_FTk[ r ][ c/2 ][0][ k ];
+						assign P_I_BTk[r-1][ c/2 ][3][ k ]	= R_O_BTk[ r ][ c/2 ][0][ k ];
+						assign P_I_InC[r-1][ c/2 ][3][ k ]	= R_O_InC[ r ][ c/2 ][0][ k ];
 					end
 					if (r < (NUM_ROW-1)) begin
 						//PE to RE: North-Port to South-Port
-						assign R_I_FTk[r][c/2][3][k]	= P_O_FTk[r+1][c/2][0][k];
-						assign R_I_BTk[r][c/2][3][k]	= P_O_BTk[r+1][c/2][0][k];
-						assign R_I_InC[r][c/2][3][k]	= P_O_InC[r+1][c/2][0][k];
+						assign R_I_FTk[ r ][ c/2 ][3][ k ]		= P_O_FTk[ r+1 ][ c/2 ][0][ k ];
+						assign R_I_BTk[ r ][ c/2 ][3][ k ]		= P_O_BTk[ r+1 ][ c/2 ][0][ k ];
+						assign R_I_InC[ r ][ c/2 ][3][ k ]		= P_O_InC[ r+1 ][ c/2 ][0][ k ];
 
 						//RE to PE: South-Port to North-Port
-						assign P_I_FTk[r+1][c/2][0][k]	= R_O_FTk[r][c/2][3][k];
-						assign P_I_BTk[r+1][c/2][0][k]	= R_O_BTk[r][c/2][3][k];
-						assign P_I_InC[r+1][c/2][0][k]	= R_O_InC[r][c/2][3][k];
+						assign P_I_FTk[ r+1 ][ c/2 ][0][ k ]	= R_O_FTk[ r ][ c/2 ][3][ k ];
+						assign P_I_BTk[ r+1 ][ c/2 ][0][ k ]	= R_O_BTk[ r ][ c/2 ][3][ k ];
+						assign P_I_InC[ r+1 ][ c/2 ][0][ k ]	= R_O_InC[ r ][ c/2 ][3][ k ];
 					end
 
 					if (c > 1) begin
 						//PE to RE: East-Port to West-Port
-						assign R_I_FTk[r][c/2][2][k]	= P_O_FTk[r][c/2-1][1][k];
-						assign R_I_BTk[r][c/2][2][k]	= P_O_BTk[r][c/2-1][1][k];
-						assign R_I_InC[r][c/2][2][k]	= P_O_InC[r][c/2-1][1][k];
+						assign R_I_FTk[ r ][ c/2 ][2][ k ]		= P_O_FTk[ r ][ c/2-1 ][1][ k ];
+						assign R_I_BTk[ r ][ c/2 ][2][ k ]		= P_O_BTk[ r ][ c/2-1 ][1][ k ];
+						assign R_I_InC[ r ][ c/2 ][2][ k ]		= P_O_InC[ r ][ c/2-1 ][1][ k ];
 
 						//RE to PE: West-Port to East-Port
-						assign P_I_FTk[r][c/2-1][1][k]	= R_O_FTk[r][c/2][2][k];
-						assign P_I_BTk[r][c/2-1][1][k]	= R_O_BTk[r][c/2][2][k];
-						assign P_I_InC[r][c/2-1][1][k]	= R_O_InC[r][c/2][2][k];
+						assign P_I_FTk[ r ][ c/2-1 ][1][ k ]	= R_O_FTk[ r ][ c/2 ][2][ k ];
+						assign P_I_BTk[ r ][ c/2-1 ][1][ k ]	= R_O_BTk[ r ][ c/2 ][2][ k ];
+						assign P_I_InC[ r ][ c/2-1 ][1][ k ]	= R_O_InC[ r ][ c/2 ][2][ k ];
 					end
 					if (c < (NUM_CLM-1)) begin
 						//PE to RE: West-Port to East-Port
-						assign R_I_FTk[r][c/2][1][k]	= P_O_FTk[r][c/2][2][k];
-						assign R_I_BTk[r][c/2][1][k]	= P_O_BTk[r][c/2][2][k];
-						assign R_I_InC[r][c/2][1][k]	= P_O_InC[r][c/2][2][k];
+						assign R_I_FTk[ r ][ c/2 ][1][ k ]	= P_O_FTk[ r ][ c/2 ][2][ k ];
+						assign R_I_BTk[ r ][ c/2 ][1][ k ]	= P_O_BTk[ r ][ c/2 ][2][ k ];
+						assign R_I_InC[ r ][ c/2 ][1][ k ]	= P_O_InC[ r ][ c/2 ][2][ k ];
 
 						//RE to PE: East-Port to West-Port
-						assign P_I_FTk[r][c/2][2][k]	= R_O_FTk[r][c/2][1][k];
-						assign P_I_BTk[r][c/2][2][k]	= R_O_BTk[r][c/2][1][k];
-						assign P_I_InC[r][c/2][2][k]	= R_O_InC[r][c/2][1][k];
+						assign P_I_FTk[ r ][ c/2 ][2][ k ]	= R_O_FTk[ r ][ c/2 ][1][ k ];
+						assign P_I_BTk[ r ][ c/2 ][2][ k ]	= R_O_BTk[ r ][ c/2 ][1][ k ];
+						assign P_I_InC[ r ][ c/2 ][2][ k ]	= R_O_InC[ r ][ c/2 ][1][ k ];
 					end
 				end
 				else if ((c%2 == 0) & (r%2 == 1))	begin
 					if (r < (NUM_ROW-1)) begin
 						//PE to RE: North-Port to South-Port
-						assign P_I_FTk[r][c/2][3][k]	= R_O_FTk[r+1][c/2][0][k];
-						assign P_I_BTk[r][c/2][3][k]	= R_O_BTk[r+1][c/2][0][k];
-						assign P_I_InC[r][c/2][3][k]	= R_O_InC[r+1][c/2][0][k];
+						assign P_I_FTk[ r ][ c/2 ][3][ k ]		= R_O_FTk[ r+1 ][ c/2 ][0][ k ];
+						assign P_I_BTk[ r ][ c/2 ][3][ k ]		= R_O_BTk[ r+1 ][ c/2 ][0][ k ];
+						assign P_I_InC[ r ][ c/2 ][3][ k ]		= R_O_InC[ r+1 ][ c/2 ][0][ k ];
 
 						//RE to PE: South-Port to North-Port
-						assign R_I_FTk[r+1][c/2][0][k]	= P_O_FTk[r][c/2][3][k];
-						assign R_I_BTk[r+1][c/2][0][k]	= P_O_BTk[r][c/2][3][k];
-						assign R_I_InC[r+1][c/2][0][k]	= P_O_InC[r][c/2][3][k];
+						assign R_I_FTk[ r+1 ][ c/2 ][0][ k ]	= P_O_FTk[ r ][ c/2 ][3][ k ];
+						assign R_I_BTk[ r+1 ][ c/2 ][0][ k ]	= P_O_BTk[ r ][ c/2 ][3][ k ];
+						assign R_I_InC[ r+1 ][ c/2 ][0][ k ]	= P_O_InC[ r ][ c/2 ][3][ k ];
 					end
 					//PE to RE: South-Port to North-Port
-					assign R_I_FTk[r-1][c/2][3][k]	= P_O_FTk[r][c/2][0][k];
-					assign R_I_BTk[r-1][c/2][3][k]	= P_O_BTk[r][c/2][0][k];
-					assign R_I_InC[r-1][c/2][3][k]	= P_O_InC[r][c/2][0][k];
+					assign R_I_FTk[r-1][ c/2 ][3][ k ]	= P_O_FTk[ r ][ c/2 ][0][ k ];
+					assign R_I_BTk[r-1][ c/2 ][3][ k ]	= P_O_BTk[ r ][ c/2 ][0][ k ];
+					assign R_I_InC[r-1][ c/2 ][3][ k ]	= P_O_InC[ r ][ c/2 ][0][ k ];
 
 					//RE to PE: North-Port to South-Port
-					assign P_I_FTk[r][c/2][0][k]	= R_O_FTk[r-1][c/2][3][k];
-					assign P_I_BTk[r][c/2][0][k]	= R_O_BTk[r-1][c/2][3][k];
-					assign P_I_InC[r][c/2][0][k]	= R_O_InC[r-1][c/2][3][k];
+					assign P_I_FTk[ r ][ c/2 ][0][ k ]	= R_O_FTk[r-1][ c/2 ][3][ k ];
+					assign P_I_BTk[ r ][ c/2 ][0][ k ]	= R_O_BTk[r-1][ c/2 ][3][ k ];
+					assign P_I_InC[ r ][ c/2 ][0][ k ]	= R_O_InC[r-1][ c/2 ][3][ k ];
 
 					if (c > 1) begin
 						//PE to RE: East-Port to West-Port
-						assign P_I_FTk[r][c/2][2][k]	= R_O_FTk[r][c/2-1][1][k];
-						assign P_I_BTk[r][c/2][2][k]	= R_O_BTk[r][c/2-1][1][k];
-						assign P_I_InC[r][c/2][2][k]	= R_O_InC[r][c/2-1][1][k];
+						assign P_I_FTk[ r ][ c/2 ][2][ k ]		= R_O_FTk[ r ][ c/2-1 ][1][ k ];
+						assign P_I_BTk[ r ][ c/2 ][2][ k ]		= R_O_BTk[ r ][ c/2-1 ][1][ k ];
+						assign P_I_InC[ r ][ c/2 ][2][ k ]		= R_O_InC[ r ][ c/2-1 ][1][ k ];
 
 						//RE to PE: West-Port to East-Port
-						assign R_I_FTk[r][c/2-1][1][k]	= P_O_FTk[r][c/2][2][k];
-						assign R_I_BTk[r][c/2-1][1][k]	= P_O_BTk[r][c/2][2][k];
-						assign R_I_InC[r][c/2-1][1][k]	= P_O_InC[r][c/2][2][k];
+						assign R_I_FTk[ r ][ c/2-1 ][1][ k ]	= P_O_FTk[ r ][ c/2 ][2][ k ];
+						assign R_I_BTk[ r ][ c/2-1 ][1][ k ]	= P_O_BTk[ r ][ c/2 ][2][ k ];
+						assign R_I_InC[ r ][ c/2-1 ][1][ k ]	= P_O_InC[ r ][ c/2 ][2][ k ];
 					end
 					if (c < (NUM_CLM-1)) begin
 						//PE to RE: East-Port to West-Port
-						assign R_I_FTk[r][c/2][2][k]	= P_O_FTk[r][c/2][1][k];
-						assign R_I_BTk[r][c/2][2][k]	= P_O_BTk[r][c/2][1][k];
-						assign R_I_InC[r][c/2][2][k]	= P_O_InC[r][c/2][1][k];
+						assign R_I_FTk[ r ][ c/2 ][2][ k ]	= P_O_FTk[ r ][ c/2 ][1][ k ];
+						assign R_I_BTk[ r ][ c/2 ][2][ k ]	= P_O_BTk[ r ][ c/2 ][1][ k ];
+						assign R_I_InC[ r ][ c/2 ][2][ k ]	= P_O_InC[ r ][ c/2 ][1][ k ];
 
 						//RE to PE: West-Port to East-Port
-						assign P_I_FTk[r][c/2][1][k]	= R_O_FTk[r][c/2][2][k];
-						assign P_I_BTk[r][c/2][1][k]	= R_O_BTk[r][c/2][2][k];
-						assign P_I_InC[r][c/2][1][k]	= R_O_InC[r][c/2][2][k];
+						assign P_I_FTk[ r ][ c/2 ][1][ k ]	= R_O_FTk[ r ][ c/2 ][2][ k ];
+						assign P_I_BTk[ r ][ c/2 ][1][ k ]	= R_O_BTk[ r ][ c/2 ][2][ k ];
+						assign P_I_InC[ r ][ c/2 ][1][ k ]	= R_O_InC[ r ][ c/2 ][2][ k ];
 					end
 				end
 				else if ((c%2 == 1) & (r%2 == 0))	begin
 					if (r > 0) begin
 						//RE to PE: South-Port to North-Port
-						assign P_I_FTk[r][c/2][0][k]	= R_O_FTk[r-1][c/2][3][k];
-						assign P_I_BTk[r][c/2][0][k]	= R_O_BTk[r-1][c/2][3][k];
-						assign P_I_InC[r][c/2][0][k]	= R_O_InC[r-1][c/2][3][k];
+						assign P_I_FTk[ r ][ c/2 ][0][ k ]	= R_O_FTk[r-1][ c/2 ][3][ k ];
+						assign P_I_BTk[ r ][ c/2 ][0][ k ]	= R_O_BTk[r-1][ c/2 ][3][ k ];
+						assign P_I_InC[ r ][ c/2 ][0][ k ]	= R_O_InC[r-1][ c/2 ][3][ k ];
 
 						//PE to RE: North-Port to South-Port
-						assign R_I_FTk[r-1][c/2][3][k]	= P_O_FTk[r][c/2][0][k];
-						assign R_I_BTk[r-1][c/2][3][k]	= P_O_BTk[r][c/2][0][k];
-						assign R_I_InC[r-1][c/2][3][k]	= P_O_InC[r][c/2][0][k];
+						assign R_I_FTk[r-1][ c/2 ][3][ k ]	= P_O_FTk[ r ][ c/2 ][0][ k ];
+						assign R_I_BTk[r-1][ c/2 ][3][ k ]	= P_O_BTk[ r ][ c/2 ][0][ k ];
+						assign R_I_InC[r-1][ c/2 ][3][ k ]	= P_O_InC[ r ][ c/2 ][0][ k ];
 					end
 					//PE to RE: South-Port to North-Port
-					assign R_I_FTk[r+1][c/2][0][k]	= P_O_FTk[r][c/2][3][k];
-					assign R_I_BTk[r+1][c/2][0][k]	= P_O_BTk[r][c/2][3][k];
-					assign R_I_InC[r+1][c/2][0][k]	= P_O_InC[r][c/2][3][k];
+					assign R_I_FTk[ r+1 ][ c/2 ][0][ k ]	= P_O_FTk[ r ][ c/2 ][3][ k ];
+					assign R_I_BTk[ r+1 ][ c/2 ][0][ k ]	= P_O_BTk[ r ][ c/2 ][3][ k ];
+					assign R_I_InC[ r+1 ][ c/2 ][0][ k ]	= P_O_InC[ r ][ c/2 ][3][ k ];
 
 					//RE to PE: North-Port to South-Port
-					assign P_I_FTk[r][c/2][3][k]	= R_O_FTk[r+1][c/2][0][k];
-					assign P_I_BTk[r][c/2][3][k]	= R_O_BTk[r+1][c/2][0][k];
-					assign P_I_InC[r][c/2][3][k]	= R_O_InC[r+1][c/2][0][k];
+					assign P_I_FTk[ r ][ c/2 ][3][ k ]		= R_O_FTk[ r+1 ][ c/2 ][0][ k ];
+					assign P_I_BTk[ r ][ c/2 ][3][ k ]		= R_O_BTk[ r+1 ][ c/2 ][0][ k ];
+					assign P_I_InC[ r ][ c/2 ][3][ k ]		= R_O_InC[ r+1 ][ c/2 ][0][ k ];
 
 					if (c < (NUM_CLM-1)) begin
 						//RE to PE: West-Port to East-Port
-						assign P_I_FTk[r][c/2][1][k]	= R_O_FTk[r][c/2+1][2][k];
-						assign P_I_BTk[r][c/2][1][k]	= R_O_BTk[r][c/2+1][2][k];
-						assign P_I_InC[r][c/2][1][k]	= R_O_InC[r][c/2+1][2][k];
+						assign P_I_FTk[ r ][ c/2 ][1][ k ]		= R_O_FTk[ r ][ c/2+1 ][2][ k ];
+						assign P_I_BTk[ r ][ c/2 ][1][ k ]		= R_O_BTk[ r ][ c/2+1 ][2][ k ];
+						assign P_I_InC[ r ][ c/2 ][1][ k ]		= R_O_InC[ r ][ c/2+1 ][2][ k ];
 
 						//RE to PE: West-Port to East-Port
-						assign R_I_FTk[r][c/2+1][2][k]	= P_O_FTk[r][c/2][1][k];
-						assign R_I_BTk[r][c/2+1][2][k]	= P_O_BTk[r][c/2][1][k];
-						assign R_I_InC[r][c/2+1][2][k]	= P_O_InC[r][c/2][1][k];
+						assign R_I_FTk[ r ][ c/2+1 ][2][ k ]	= P_O_FTk[ r ][ c/2 ][1][ k ];
+						assign R_I_BTk[ r ][ c/2+1 ][2][ k ]	= P_O_BTk[ r ][ c/2 ][1][ k ];
+						assign R_I_InC[ r ][ c/2+1 ][2][ k ]	= P_O_InC[ r ][ c/2 ][1][ k ];
 					end
 					//RE to PE: West-Port to East-Port
-					assign R_I_FTk[r][c/2][1][k]	= P_O_FTk[r][c/2][2][k];
-					assign R_I_BTk[r][c/2][1][k]	= P_O_BTk[r][c/2][2][k];
-					assign R_I_InC[r][c/2][1][k]	= P_O_InC[r][c/2][2][k];
+					assign R_I_FTk[ r ][ c/2 ][1][ k ]	= P_O_FTk[ r ][ c/2 ][2][ k ];
+					assign R_I_BTk[ r ][ c/2 ][1][ k ]	= P_O_BTk[ r ][ c/2 ][2][ k ];
+					assign R_I_InC[ r ][ c/2 ][1][ k ]	= P_O_InC[ r ][ c/2 ][2][ k ];
 
 					//PE to RE: East-Port to West-Port
-					assign P_I_FTk[r][c/2][2][k]	= R_O_FTk[r][c/2][1][k];
-					assign P_I_BTk[r][c/2][2][k]	= R_O_BTk[r][c/2][1][k];
-					assign P_I_InC[r][c/2][2][k]	= R_O_InC[r][c/2][1][k];
+					assign P_I_FTk[ r ][ c/2 ][2][ k ]	= R_O_FTk[ r ][ c/2 ][1][ k ];
+					assign P_I_BTk[ r ][ c/2 ][2][ k ]	= R_O_BTk[ r ][ c/2 ][1][ k ];
+					assign P_I_InC[ r ][ c/2 ][2][ k ]	= R_O_InC[ r ][ c/2 ][1][ k ];
 				end
 				else if ((c%2 == 1) & (r%2 == 1))	begin
 					if (r < (NUM_ROW-1)) begin
 						//PE to RE: North-Port to South-Port
-						assign R_I_FTk[r][c/2][3][k]	= P_O_FTk[r+1][c/2][0][k];
-						assign R_I_BTk[r][c/2][3][k]	= P_O_BTk[r+1][c/2][0][k];
-						assign R_I_InC[r][c/2][3][k]	= P_O_InC[r+1][c/2][0][k];
+						assign R_I_FTk[ r ][ c/2 ][3][ k ]		= P_O_FTk[ r+1 ][ c/2 ][0][ k ];
+						assign R_I_BTk[ r ][ c/2 ][3][ k ]		= P_O_BTk[ r+1 ][ c/2 ][0][ k ];
+						assign R_I_InC[ r ][ c/2 ][3][ k ]		= P_O_InC[ r+1 ][ c/2 ][0][ k ];
 
 						//RE to PE: South-Port to North-Port
-						assign P_I_FTk[r+1][c/2][0][k]	= R_O_FTk[r][c/2][3][k];
-						assign P_I_BTk[r+1][c/2][0][k]	= R_O_BTk[r][c/2][3][k];
-						assign P_I_InC[r+1][c/2][0][k]	= R_O_InC[r][c/2][3][k];
+						assign P_I_FTk[ r+1 ][ c/2 ][0][ k ]	= R_O_FTk[ r ][ c/2 ][3][ k ];
+						assign P_I_BTk[ r+1 ][ c/2 ][0][ k ]	= R_O_BTk[ r ][ c/2 ][3][ k ];
+						assign P_I_InC[ r+1 ][ c/2 ][0][ k ]	= R_O_InC[ r ][ c/2 ][3][ k ];
 					end
 					//RE to PE: North-Port to South-Port
-					assign P_I_FTk[r-1][c/2][3][k]	= R_O_FTk[r][c/2][0][k];
-					assign P_I_BTk[r-1][c/2][3][k]	= R_O_BTk[r][c/2][0][k];
-					assign P_I_InC[r-1][c/2][3][k]	= R_O_InC[r][c/2][0][k];
+					assign P_I_FTk[r-1][ c/2 ][3][ k ]	= R_O_FTk[ r ][ c/2 ][0][ k ];
+					assign P_I_BTk[r-1][ c/2 ][3][ k ]	= R_O_BTk[ r ][ c/2 ][0][ k ];
+					assign P_I_InC[r-1][ c/2 ][3][ k ]	= R_O_InC[ r ][ c/2 ][0][ k ];
 
 					//PE to RE: South-Port to North-Port
-					assign R_I_FTk[r][c/2][0][k]	= P_O_FTk[r-1][c/2][3][k];
-					assign R_I_BTk[r][c/2][0][k]	= P_O_BTk[r-1][c/2][3][k];
-					assign R_I_InC[r][c/2][0][k]	= P_O_InC[r-1][c/2][3][k];
+					assign R_I_FTk[ r ][ c/2 ][0][ k ]	= P_O_FTk[r-1][ c/2 ][3][ k ];
+					assign R_I_BTk[ r ][ c/2 ][0][ k ]	= P_O_BTk[r-1][ c/2 ][3][ k ];
+					assign R_I_InC[ r ][ c/2 ][0][ k ]	= P_O_InC[r-1][ c/2 ][3][ k ];
 
 					if (c < (NUM_CLM-1)) begin
 						//RE to PE: West-Port to East-Port
-						assign R_I_FTk[r][c/2][1][k]	= P_O_FTk[r][c/2+1][2][k];
-						assign R_I_BTk[r][c/2][1][k]	= P_O_BTk[r][c/2+1][2][k];
-						assign R_I_InC[r][c/2][1][k]	= P_O_InC[r][c/2+1][2][k];
+						assign R_I_FTk[ r ][ c/2 ][1][ k ]		= P_O_FTk[ r ][ c/2+1 ][2][ k ];
+						assign R_I_BTk[ r ][ c/2 ][1][ k ]		= P_O_BTk[ r ][ c/2+1 ][2][ k ];
+						assign R_I_InC[ r ][ c/2 ][1][ k ]		= P_O_InC[ r ][ c/2+1 ][2][ k ];
 
 						//PE to RE: East-Port to West-Port
-						assign P_I_FTk[r][c/2+1][2][k]	= R_O_FTk[r][c/2][1][k];
-						assign P_I_BTk[r][c/2+1][2][k]	= R_O_BTk[r][c/2][1][k];
-						assign P_I_InC[r][c/2+1][2][k]	= R_O_InC[r][c/2][1][k];
+						assign P_I_FTk[ r ][ c/2+1 ][2][ k ]	= R_O_FTk[ r ][ c/2 ][1][ k ];
+						assign P_I_BTk[ r ][ c/2+1 ][2][ k ]	= R_O_BTk[ r ][ c/2 ][1][ k ];
+						assign P_I_InC[ r ][ c/2+1 ][2][ k ]	= R_O_InC[ r ][ c/2 ][1][ k ];
 					end
 					//RE to PE: West-Port to East-Port
-					assign P_I_FTk[r][c/2][1][k]	= R_O_FTk[r][c/2][2][k];
-					assign P_I_BTk[r][c/2][1][k]	= R_O_BTk[r][c/2][2][k];
-					assign P_I_InC[r][c/2][1][k]	= R_O_InC[r][c/2][2][k];
+					assign P_I_FTk[ r ][ c/2 ][1][ k ]	= R_O_FTk[ r ][ c/2 ][2][ k ];
+					assign P_I_BTk[ r ][ c/2 ][1][ k ]	= R_O_BTk[ r ][ c/2 ][2][ k ];
+					assign P_I_InC[ r ][ c/2 ][1][ k ]	= R_O_InC[ r ][ c/2 ][2][ k ];
 
 					//PE to RE: East-Port to West-Port
-					assign R_I_FTk[r][c/2][2][k]	= P_O_FTk[r][c/2][1][k];
-					assign R_I_BTk[r][c/2][2][k]	= P_O_BTk[r][c/2][1][k];
-					assign R_I_InC[r][c/2][2][k]	= P_O_InC[r][c/2][1][k];
+					assign R_I_FTk[ r ][ c/2 ][2][ k ]	= P_O_FTk[ r ][ c/2 ][1][ k ];
+					assign R_I_BTk[ r ][ c/2 ][2][ k ]	= P_O_BTk[ r ][ c/2 ][1][ k ];
+					assign R_I_InC[ r ][ c/2 ][2][ k ]	= P_O_InC[ r ][ c/2 ][1][ k ];
 				end
 
 
@@ -317,28 +317,28 @@ module ComputeTile
 				if ( EnIF_North == 1 ) begin
 					if (r == 0) begin
 						if (c%2 == 1) begin
-							assign P_I_FTk[0][c/2][0][k]	= I_FTk[NorthIF_ID][c][k];
-							assign P_I_BTk[0][c/2][0][k]	= I_BTk[NorthIF_ID][c][k];
-							assign P_I_InC[0][c/2][0][k]	= '0;
+							assign P_I_FTk[0][ c/2 ][0][ k ]	= I_FTk[NorthIF_ID][ c ][ k ];
+							assign P_I_BTk[0][ c/2 ][0][ k ]	= I_BTk[NorthIF_ID][ c ][ k ];
+							assign P_I_InC[0][ c/2 ][0][ k ]	= '0;
 						end
 						else begin
-							assign R_I_FTk[0][c/2][0][k]	= I_FTk[NorthIF_ID][c][k];
-							assign R_I_BTk[0][c/2][0][k]	= I_BTk[NorthIF_ID][c][k];
-							assign R_I_InC[0][c/2][0][k]	= '0;
+							assign R_I_FTk[0][ c/2 ][0][ k ]	= I_FTk[NorthIF_ID][ c ][ k ];
+							assign R_I_BTk[0][ c/2 ][0][ k ]	= I_BTk[NorthIF_ID][ c ][ k ];
+							assign R_I_InC[0][ c/2 ][0][ k ]	= '0;
 						end
 					end
 				end
 				else begin
 					if (r == 0) begin
 						if (c%2 == 1) begin
-							assign P_I_FTk[0][c/2][0][k]	= P_O_FTk[0][c/2][0][k];
-							assign P_I_BTk[0][c/2][0][k]	= P_O_BTk[0][c/2][0][k];
-							assign P_I_InC[0][c/2][0][k]	= P_O_InC[0][c/2][0][k];
+							assign P_I_FTk[0][ c/2 ][0][ k ]	= P_O_FTk[0][ c/2 ][0][ k ];
+							assign P_I_BTk[0][ c/2 ][0][ k ]	= P_O_BTk[0][ c/2 ][0][ k ];
+							assign P_I_InC[0][ c/2 ][0][ k ]	= P_O_InC[0][ c/2 ][0][ k ];
 						end
 						else begin
-							assign R_I_FTk[0][c/2][0][k]	= R_O_FTk[0][c/2][0][k];
-							assign R_I_BTk[0][c/2][0][k]	= R_O_FTk[0][c/2][0][k];
-							assign R_I_InC[0][c/2][0][k]	= R_O_InC[0][c/2][0][k];
+							assign R_I_FTk[0][ c/2 ][0][ k ]	= R_O_FTk[0][ c/2 ][0][ k ];
+							assign R_I_BTk[0][ c/2 ][0][ k ]	= R_O_FTk[0][ c/2 ][0][ k ];
+							assign R_I_InC[0][ c/2 ][0][ k ]	= R_O_InC[0][ c/2 ][0][ k ];
 						end
 					end
 				end
@@ -347,28 +347,28 @@ module ComputeTile
 				if ( EnIF_West == 1 ) begin
 					if (c == 0) begin
 						if (r%2 == 1) begin
-							assign P_I_FTk[r][0][2][k]	= I_FTk[WestIF_ID][r][k];
-							assign P_I_BTk[r][0][2][k]	= I_BTk[WestIF_ID][r][k];
-							assign P_I_InC[r][0][2][k]	= '0;
+							assign P_I_FTk[ r ][0][2][ k ]	= I_FTk[WestIF_ID][ r ][ k ];
+							assign P_I_BTk[ r ][0][2][ k ]	= I_BTk[WestIF_ID][ r ][ k ];
+							assign P_I_InC[ r ][0][2][ k ]	= '0;
 						end
 						else begin
-							assign R_I_FTk[r][0][2][k]	= I_FTk[WestIF_ID][r][k];
-							assign R_I_BTk[r][0][2][k]	= I_BTk[WestIF_ID][r][k];
-							assign R_I_InC[r][0][2][k]	= '0;
+							assign R_I_FTk[ r ][0][2][ k ]	= I_FTk[WestIF_ID][ r ][ k ];
+							assign R_I_BTk[ r ][0][2][ k ]	= I_BTk[WestIF_ID][ r ][ k ];
+							assign R_I_InC[ r ][0][2][ k ]	= '0;
 						end
 					end
 				end
 				else begin
 					if (c == 0) begin
 						if (r%2 == 1) begin
-							assign P_I_FTk[r][0][2][k]	= P_O_FTk[r][0][2][k];
-							assign P_I_BTk[r][0][2][k]	= P_O_BTk[r][0][2][k];
-							assign P_I_InC[r][0][2][k]	= P_O_InC[r][0][2][k];
+							assign P_I_FTk[ r ][0][2][ k ]	= P_O_FTk[ r ][0][2][ k ];
+							assign P_I_BTk[ r ][0][2][ k ]	= P_O_BTk[ r ][0][2][ k ];
+							assign P_I_InC[ r ][0][2][ k ]	= P_O_InC[ r ][0][2][ k ];
 						end
 						else begin
-							assign R_I_FTk[r][0][2][k]	= R_O_FTk[r][0][2][k];
-							assign R_I_BTk[r][0][2][k]	= R_O_BTk[r][0][2][k];
-							assign R_I_InC[r][0][2][k]	= R_O_InC[r][0][2][k];
+							assign R_I_FTk[ r ][0][2][ k ]	= R_O_FTk[ r ][0][2][ k ];
+							assign R_I_BTk[ r ][0][2][ k ]	= R_O_BTk[ r ][0][2][ k ];
+							assign R_I_InC[ r ][0][2][ k ]	= R_O_InC[ r ][0][2][ k ];
 						end
 					end
 				end
@@ -377,28 +377,28 @@ module ComputeTile
 				if ( EnIF_South == 1 ) begin
 					if (r == (NUM_ROW-1)) begin
 						if (c%2 == 0) begin
-							assign P_I_FTk[NUM_ROW-1][c/2][3][k]	= I_FTk[SouthIF_ID][c][k];
-							assign P_I_BTk[NUM_ROW-1][c/2][3][k]	= I_BTk[SouthIF_ID][c][k];
-							assign P_I_InC[NUM_ROW-1][c/2][3][k]	= '0;
+							assign P_I_FTk[NUM_ROW-1][ c/2 ][3][ k ]	= I_FTk[SouthIF_ID][ c ][ k ];
+							assign P_I_BTk[NUM_ROW-1][ c/2 ][3][ k ]	= I_BTk[SouthIF_ID][ c ][ k ];
+							assign P_I_InC[NUM_ROW-1][ c/2 ][3][ k ]	= '0;
 						end
 						else begin
-							assign R_I_FTk[NUM_ROW-1][c/2][3][k]	= I_FTk[SouthIF_ID][c][k];
-							assign R_I_BTk[NUM_ROW-1][c/2][3][k]	= I_BTk[SouthIF_ID][c][k];
-							assign R_I_InC[NUM_ROW-1][c/2][3][k]	= '0;
+							assign R_I_FTk[NUM_ROW-1][ c/2 ][3][ k ]	= I_FTk[SouthIF_ID][ c ][ k ];
+							assign R_I_BTk[NUM_ROW-1][ c/2 ][3][ k ]	= I_BTk[SouthIF_ID][ c ][ k ];
+							assign R_I_InC[NUM_ROW-1][ c/2 ][3][ k ]	= '0;
 						end
 					end
 				end
 				else begin
 					if (r == (NUM_ROW-1)) begin
 						if (c%2 == 0) begin
-							assign P_I_FTk[NUM_ROW-1][c/2][3][k]	= P_O_FTk[NUM_ROW-1][c/2][3][k];
-							assign P_I_BTk[NUM_ROW-1][c/2][3][k]	= P_O_BTk[NUM_ROW-1][c/2][3][k];
-							assign P_I_InC[NUM_ROW-1][c/2][3][k]	= P_O_InC[NUM_ROW-1][c/2][3][k];
+							assign P_I_FTk[NUM_ROW-1][ c/2 ][3][ k ]	= P_O_FTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign P_I_BTk[NUM_ROW-1][ c/2 ][3][ k ]	= P_O_BTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign P_I_InC[NUM_ROW-1][ c/2 ][3][ k ]	= P_O_InC[NUM_ROW-1][ c/2 ][3][ k ];
 						end
 						else begin
-							assign R_I_FTk[NUM_ROW-1][c/2][3][k]	= R_O_FTk[NUM_ROW-1][c/2][3][k];
-							assign R_I_BTk[NUM_ROW-1][c/2][3][k]	= R_O_BTk[NUM_ROW-1][c/2][3][k];
-							assign R_I_InC[NUM_ROW-1][c/2][3][k]	= R_O_InC[NUM_ROW-1][c/2][3][k];
+							assign R_I_FTk[NUM_ROW-1][ c/2 ][3][ k ]	= R_O_FTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign R_I_BTk[NUM_ROW-1][ c/2 ][3][ k ]	= R_O_BTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign R_I_InC[NUM_ROW-1][ c/2 ][3][ k ]	= R_O_InC[NUM_ROW-1][ c/2 ][3][ k ];
 						end
 					end
 				end
@@ -407,28 +407,28 @@ module ComputeTile
 				if ( EnIF_East == 1 ) begin
 					if (c == (NUM_CLM-1)) begin
 						if (r%2 == 0) begin
-							assign P_I_FTk[r][(NUM_CLM-1)/2][1][k]	= I_FTk[EastIF_ID][r][k];
-							assign P_I_BTk[r][(NUM_CLM-1)/2][1][k]	= I_BTk[EastIF_ID][r][k];
-							assign P_I_InC[r][(NUM_CLM-1)/2][1][k]	= '0;
+							assign P_I_FTk[ r ][(NUM_CLM-1)/2][1][ k ]	= I_FTk[EastIF_ID][ r ][ k ];
+							assign P_I_BTk[ r ][(NUM_CLM-1)/2][1][ k ]	= I_BTk[EastIF_ID][ r ][ k ];
+							assign P_I_InC[ r ][(NUM_CLM-1)/2][1][ k ]	= '0;
 						end
 						else begin
-							assign R_I_FTk[r][(NUM_CLM-1)/2][1][k]	= I_FTk[EastIF_ID][r][k];
-							assign R_I_BTk[r][(NUM_CLM-1)/2][1][k]	= I_BTk[EastIF_ID][r][k];
-							assign R_I_InC[r][(NUM_CLM-1)/2][1][k]	= '0;
+							assign R_I_FTk[ r ][(NUM_CLM-1)/2][1][ k ]	= I_FTk[EastIF_ID][ r ][ k ];
+							assign R_I_BTk[ r ][(NUM_CLM-1)/2][1][ k ]	= I_BTk[EastIF_ID][ r ][ k ];
+							assign R_I_InC[ r ][(NUM_CLM-1)/2][1][ k ]	= '0;
 						end
 					end
 				end
 				else begin
 					if (c == (NUM_CLM-1)) begin
 						if (r%2 == 0) begin
-							assign P_I_FTk[r][(NUM_CLM-1)/2][1][k]	= P_O_FTk[r][(NUM_CLM-1)/2][1][k];
-							assign P_I_BTk[r][(NUM_CLM-1)/2][1][k]	= P_O_BTk[r][(NUM_CLM-1)/2][1][k];
-							assign P_I_InC[r][(NUM_CLM-1)/2][1][k]	= P_O_InC[r][(NUM_CLM-1)/2][1][k];
+							assign P_I_FTk[ r ][(NUM_CLM-1)/2][1][ k ]	= P_O_FTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign P_I_BTk[ r ][(NUM_CLM-1)/2][1][ k ]	= P_O_BTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign P_I_InC[ r ][(NUM_CLM-1)/2][1][ k ]	= P_O_InC[ r ][(NUM_CLM-1)/2][1][ k ];
 						end
 						else begin
-							assign R_I_FTk[r][(NUM_CLM-1)/2][1][k]	= R_O_FTk[r][(NUM_CLM-1)/2][1][k];
-							assign R_I_BTk[r][(NUM_CLM-1)/2][1][k]	= R_O_BTk[r][(NUM_CLM-1)/2][1][k];
-							assign R_I_InC[r][(NUM_CLM-1)/2][1][k]	= R_O_InC[r][(NUM_CLM-1)/2][1][k];
+							assign R_I_FTk[ r ][(NUM_CLM-1)/2][1][ k ]	= R_O_FTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign R_I_BTk[ r ][(NUM_CLM-1)/2][1][ k ]	= R_O_BTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign R_I_InC[ r ][(NUM_CLM-1)/2][1][ k ]	= R_O_InC[ r ][(NUM_CLM-1)/2][1][ k ];
 						end
 					end
 				end
@@ -445,12 +445,12 @@ module ComputeTile
 				if ( EnIF_North == 1 ) begin
 					if (r == 0) begin
 						if (c%2 == 1) begin
-							assign O_FTk[NorthIF_ID][c][k]	= P_O_FTk[0][c/2][0][k];
-							assign O_BTk[NorthIF_ID][c][k]	= P_O_BTk[0][c/2][0][k];
+							assign O_FTk[NorthIF_ID][ c ][ k ]	= P_O_FTk[0][ c/2 ][0][ k ];
+							assign O_BTk[NorthIF_ID][ c ][ k ]	= P_O_BTk[0][ c/2 ][0][ k ];
 						end
 						else begin
-							assign O_FTk[NorthIF_ID][c][k]	= R_O_FTk[0][c/2][0][k];
-							assign O_BTk[NorthIF_ID][c][k]	= R_O_BTk[0][c/2][0][k];
+							assign O_FTk[NorthIF_ID][ c ][ k ]	= R_O_FTk[0][ c/2 ][0][ k ];
+							assign O_BTk[NorthIF_ID][ c ][ k ]	= R_O_BTk[0][ c/2 ][0][ k ];
 						end
 					end
 				end
@@ -459,12 +459,12 @@ module ComputeTile
 				if ( EnIF_West == 1 ) begin
 					if (c == 0) begin
 						if (r%2 == 1) begin
-							assign O_FTk[WestIF_ID][r][k]	= P_O_FTk[r][0][2][k];
-							assign O_BTk[WestIF_ID][r][k]	= P_O_BTk[r][0][2][k];
+							assign O_FTk[WestIF_ID][ r ][ k ]	= P_O_FTk[ r ][0][2][ k ];
+							assign O_BTk[WestIF_ID][ r ][ k ]	= P_O_BTk[ r ][0][2][ k ];
 						end
 						else begin
-							assign O_FTk[WestIF_ID][r][k]	= R_O_FTk[r][0][2][k];
-							assign O_BTk[WestIF_ID][r][k]	= R_O_BTk[r][0][2][k];
+							assign O_FTk[WestIF_ID][ r ][ k ]	= R_O_FTk[ r ][0][2][ k ];
+							assign O_BTk[WestIF_ID][ r ][ k ]	= R_O_BTk[ r ][0][2][ k ];
 						end
 					end
 				end
@@ -473,12 +473,12 @@ module ComputeTile
 				if ( EnIF_South == 1 ) begin
 					if (r == (NUM_ROW-1)) begin
 						if (c%2 == 0) begin
-							assign O_FTk[SouthIF_ID][c][k]	= P_O_FTk[NUM_ROW-1][c/2][3][k];
-							assign O_BTk[SouthIF_ID][c][k]	= P_O_BTk[NUM_ROW-1][c/2][3][k];
+							assign O_FTk[SouthIF_ID][ c ][ k ]	= P_O_FTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign O_BTk[SouthIF_ID][ c ][ k ]	= P_O_BTk[NUM_ROW-1][ c/2 ][3][ k ];
 						end
 						else begin
-							assign O_FTk[SouthIF_ID][c][k]	= R_O_FTk[NUM_ROW-1][c/2][3][k];
-							assign O_BTk[SouthIF_ID][c][k]	= R_O_BTk[NUM_ROW-1][c/2][3][k];
+							assign O_FTk[SouthIF_ID][ c ][ k ]	= R_O_FTk[NUM_ROW-1][ c/2 ][3][ k ];
+							assign O_BTk[SouthIF_ID][ c ][ k ]	= R_O_BTk[NUM_ROW-1][ c/2 ][3][ k ];
 						end
 					end
 				end
@@ -487,12 +487,12 @@ module ComputeTile
 				if ( EnIF_East == 1 ) begin
 					if (c == (NUM_CLM-1)) begin
 						if (r%2 == 0) begin
-							assign O_FTk[EastIF_ID][r][k]	= P_O_FTk[r][(NUM_CLM-1)/2][1][k];
-							assign O_BTk[EastIF_ID][r][k]	= P_O_BTk[r][(NUM_CLM-1)/2][1][k];
+							assign O_FTk[EastIF_ID][ r ][ k ]	= P_O_FTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign O_BTk[EastIF_ID][ r ][ k ]	= P_O_BTk[ r ][(NUM_CLM-1)/2][1][ k ];
 						end
 						else begin
-							assign O_FTk[EastIF_ID][r][k]	= R_O_FTk[r][(NUM_CLM-1)/2][1][k];
-							assign O_BTk[EastIF_ID][r][k]	= R_O_BTk[r][(NUM_CLM-1)/2][1][k];
+							assign O_FTk[EastIF_ID][ r ][ k ]	= R_O_FTk[ r ][(NUM_CLM-1)/2][1][ k ];
+							assign O_BTk[EastIF_ID][ r ][ k ]	= R_O_BTk[ r ][(NUM_CLM-1)/2][1][ k ];
 						end
 					end
 				end

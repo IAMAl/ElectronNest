@@ -84,9 +84,6 @@ module LogicUnit
 														ResultXOR;
 
 	//	 Reduction
-	//assign ResultAND_R		= { '(WIDTH_DATA-1){0}, &SourceA };
-	//assign ResultOR_R		= { '(WIDTH_DATA-1){0}, |SourceA };
-	//assign ResultXOR_R		= { '(WIDTH_DATA-1){0}, ^SourceA };
 	assign ResultAND_R		=  0 | &SourceA;
 	assign ResultOR_R		=  0 | |SourceA;
 	assign ResultXOR_R		=  0 | ^SourceA;
